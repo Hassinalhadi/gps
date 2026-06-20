@@ -1,0 +1,132 @@
+name: Build Release APK (E-Bike 30km/h)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - 'app/build.gradle.kts'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check if Version Changed
+        id: check_version
+        run: |
+          VERSION_NAME=$(grep 'versionName =' app/build.gradle.kts | head -n 1 | awk -F'"' '{print $2}')
+          echo "versionName: $VERSION_NAME"
+
+          if [ -z "$VERSION_NAME" ]; then
+            echo "فشل استخراج versionName"
+            exit 1
+          fi
+
+          TAG_NAME="v${VERSION_NAME}-ebike"
+
+          if git ls-remote --tags origin | grep -q "refs/tags/$TAG_NAME"; then
+            echo "Tag $TAG_NAME موجود مسبقاً"
+            echo "changed=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "إصدار جديد: $TAG_NAME"
+          echo "changed=true"  >> $GITHUB_OUTPUT
+          echo "tag=$TAG_NAME" >> $GITHUB_OUTPUT
+          echo "version=$VERSION_NAME" >> $GITHUB_OUTPUT
+
+      - name: Generate Changelog
+        if: steps.check_version.outputs.changed == 'true'
+        run: |
+          PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -z "$PREV_TAG" ]; then
+            COMMITS=$(git log --no-merges --pretty=format:"%s")
+          else
+            COMMITS=$(git log "$PREV_TAG"..HEAD --no-merges --pretty=format:"%s")
+          fi
+
+          {
+            echo "## LocationSpoofer ${{ steps.check_version.outputs.version }} — E-Bike 30 km/h"
+            echo ""
+            echo "### ✨ الميزات الجديدة في هذا الإصدار"
+            echo "- إضافة وضع **E-Bike (30 km/h)** في نظام تحديد الطرق"
+            echo "  - السرعة: \`8.333 m/s\` = 30 km/h بالضبط"
+            echo "  - Gaussian jitter radius: \`2.5m\` (بين Cycling 3.0 وDriving 2.0)"
+            echo "  - مدعوم في: العربية · الإنجليزية · الصينية"
+            echo ""
+            echo "### الملفات المعدّلة"
+            echo "- \`AppUiState.kt\` — إضافة \`EBIKE\` في \`enum SimMode\`"
+            echo "- \`TrajectorySimulator.kt\` — إضافة \`getModeParams(\"EBIKE\")\`"
+            echo "- \`MapScreen.kt\` — إضافة زر E-Bike في واجهة اختيار السرعة"
+            echo "- \`strings.xml\` (EN/AR/ZH) — ترجمة الوضع الجديد"
+            echo ""
+
+            FEATS=$(echo "$COMMITS" | grep "^feat:" | sed 's/^feat:[[:space:]]*/- /' || true)
+            FIXES=$(echo "$COMMITS" | grep "^fix:"  | sed 's/^fix:[[:space:]]*/- /'  || true)
+
+            if [ -n "$FEATS" ]; then
+              echo "### إضافات أخرى"
+              echo "$FEATS"
+              echo ""
+            fi
+            if [ -n "$FIXES" ]; then
+              echo "### إصلاحات"
+              echo "$FIXES"
+              echo ""
+            fi
+          } > changelog.txt
+
+          cat changelog.txt
+
+      - name: Setup Java 17
+        if: steps.check_version.outputs.changed == 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Decode Keystore
+        if: steps.check_version.outputs.changed == 'true'
+        env:
+          ENCODED_KEYSTORE: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          echo "$ENCODED_KEYSTORE" | base64 -d > "$RUNNER_TEMP/keystore.jks"
+
+      - name: Build Release APK
+        if: steps.check_version.outputs.changed == 'true'
+        env:
+          KEYSTORE_FILE_PATH: ${{ runner.temp }}/keystore.jks
+          KEYSTORE_PASSWORD:  ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS:          ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD:       ${{ secrets.KEY_PASSWORD }}
+          GOOGLE_MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
+        run: |
+          chmod +x ./gradlew
+          ./gradlew --no-daemon :app:assembleRelease
+
+          APK_SRC="app/build/outputs/apk/release"
+          APK_NAME="LocationSpoofer-${{ steps.check_version.outputs.tag }}.apk"
+          find "$APK_SRC" -name "*.apk" -exec mv {} "$APK_SRC/$APK_NAME" \;
+          echo "APK_NAME=$APK_NAME" >> $GITHUB_ENV
+
+      - name: Publish GitHub Release
+        if: steps.check_version.outputs.changed == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.check_version.outputs.tag }}
+          name: "LocationSpoofer ${{ steps.check_version.outputs.version }} — E-Bike 30km/h"
+          body_path: changelog.txt
+          files: app/build/outputs/apk/release/${{ env.APK_NAME }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
