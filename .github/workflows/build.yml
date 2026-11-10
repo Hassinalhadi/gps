@@ -1,0 +1,981 @@
+name: Patch Catch Log (HungerStation Only) & Build APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply Catch Log Feature & Restrict Scope to HungerStation
+        run: |
+          python3 - << 'PYEOF'
+          import pathlib, re
+
+          def write_file(rel_path: str, content: str):
+              p = pathlib.Path(rel_path)
+              p.parent.mkdir(parents=True, exist_ok=True)
+              p.write_text(content, encoding='utf-8')
+              print(f'[+] Wrote {rel_path}')
+
+          write_file('app/src/main/res/values/xposed_scope.xml', '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n    <string-array name="xposed_scope">\n        <item>com.logistics.rider.hungerstation</item>\n    </string-array>\n</resources>\n')
+
+          write_file('app/src/main/resources/META-INF/xposed/scope.list', 'com.logistics.rider.hungerstation\ncom.suseoaa.locationspoofer\n')
+
+          write_file('app/src/main/java/com/suseoaa/locationspoofer/data/model/CatchLogEntry.kt', 'package com.suseoaa.locationspoofer.data.model\n\nimport kotlinx.serialization.Serializable\n\nenum class CatchLogCategory {\n    ALL,\n    ORDER,\n    LOCATION,\n    SECURITY,\n    ENV,\n    SYSTEM\n}\n\n@Serializable\ndata class CatchLogEntry(\n    val id: Long = System.currentTimeMillis(),\n    val timestamp: Long = System.currentTimeMillis(),\n    val packageName: String = "com.logistics.rider.hungerstation",\n    val category: String = "LOCATION",\n    val title: String = "",\n    val detail: String = "",\n    val lat: Double? = null,\n    val lng: Double? = null,\n    val hitCount: Int = 1\n)\n')
+
+          write_file('app/src/main/java/com/suseoaa/locationspoofer/ui/screen/CatchLogScreen.kt', 'package com.suseoaa.locationspoofer.ui.screen\n\nimport android.widget.Toast\nimport androidx.compose.foundation.BorderStroke\nimport androidx.compose.foundation.background\nimport androidx.compose.foundation.clickable\nimport androidx.compose.foundation.horizontalScroll\nimport androidx.compose.foundation.layout.*\nimport androidx.compose.foundation.lazy.LazyColumn\nimport androidx.compose.foundation.lazy.items\nimport androidx.compose.foundation.rememberScrollState\nimport androidx.compose.foundation.shape.CircleShape\nimport androidx.compose.foundation.shape.RoundedCornerShape\nimport androidx.compose.material.icons.Icons\nimport androidx.compose.material.icons.automirrored.filled.ArrowBack\nimport androidx.compose.material.icons.outlined.*\nimport androidx.compose.material.icons.rounded.*\nimport androidx.compose.material3.*\nimport androidx.compose.runtime.*\nimport androidx.compose.ui.Alignment\nimport androidx.compose.ui.Modifier\nimport androidx.compose.ui.draw.clip\nimport androidx.compose.ui.graphics.Color\nimport androidx.compose.ui.graphics.vector.ImageVector\nimport androidx.compose.ui.platform.LocalClipboardManager\nimport androidx.compose.ui.platform.LocalContext\nimport androidx.compose.ui.res.stringResource\nimport androidx.compose.ui.text.AnnotatedString\nimport androidx.compose.ui.text.font.FontFamily\nimport androidx.compose.ui.text.font.FontWeight\nimport androidx.compose.ui.text.style.TextOverflow\nimport androidx.compose.ui.unit.dp\nimport androidx.compose.ui.unit.sp\nimport com.suseoaa.locationspoofer.R\nimport com.suseoaa.locationspoofer.data.model.AppState\nimport com.suseoaa.locationspoofer.data.model.CatchLogCategory\nimport com.suseoaa.locationspoofer.data.model.CatchLogEntry\nimport com.suseoaa.locationspoofer.ui.theme.AccentBlue\nimport com.suseoaa.locationspoofer.ui.theme.AccentGreen\nimport com.suseoaa.locationspoofer.ui.theme.AccentOrange\nimport com.suseoaa.locationspoofer.ui.theme.AppColors\nimport com.suseoaa.locationspoofer.viewmodel.MainViewModel\nimport kotlinx.coroutines.delay\nimport java.text.SimpleDateFormat\nimport java.util.Date\nimport java.util.Locale\n\n@Composable\nfun CatchLogScreen(\n    viewModel: MainViewModel,\n    uiState: AppState,\n    isDark: Boolean,\n    onClose: () -> Unit\n) {\n    val context = LocalContext.current\n    val clipboardManager = LocalClipboardManager.current\n    var searchQuery by remember { mutableStateOf("") }\n    var showClearConfirm by remember { mutableStateOf(false) }\n\n    // تحديث تلقائي للسجل عندما تكون شاشة سجل الصيد مفتوحة\n    LaunchedEffect(uiState.catchLogAutoRefresh, uiState.enableCatchLog) {\n        viewModel.refreshCatchLogs()\n        while (uiState.catchLogAutoRefresh && uiState.enableCatchLog) {\n            delay(2000L)\n            viewModel.refreshCatchLogs()\n        }\n    }\n\n    val filteredLogs = remember(uiState.catchLogs, uiState.selectedCatchLogCategory, searchQuery) {\n        uiState.catchLogs.filter { entry ->\n            val matchesPkg = entry.packageName.substringBefore(":") == "com.logistics.rider.hungerstation"\n            val matchesCat = uiState.selectedCatchLogCategory == CatchLogCategory.ALL ||\n                entry.category.equals(uiState.selectedCatchLogCategory.name, ignoreCase = true)\n            val matchesSearch = searchQuery.isBlank() ||\n                entry.title.contains(searchQuery, ignoreCase = true) ||\n                entry.detail.contains(searchQuery, ignoreCase = true) ||\n                (entry.lat != null && entry.lat.toString().contains(searchQuery)) ||\n                (entry.lng != null && entry.lng.toString().contains(searchQuery))\n            matchesPkg && matchesCat && matchesSearch\n        }\n    }\n\n    val orderCount = remember(uiState.catchLogs) { uiState.catchLogs.count { it.category == "ORDER" } }\n    val locCount = remember(uiState.catchLogs) { uiState.catchLogs.count { it.category == "LOCATION" } }\n    val secCount = remember(uiState.catchLogs) { uiState.catchLogs.count { it.category == "SECURITY" } }\n    val envCount = remember(uiState.catchLogs) { uiState.catchLogs.count { it.category == "ENV" } }\n\n    Column(\n        modifier = Modifier\n            .fillMaxSize()\n            .background(MaterialTheme.colorScheme.background)\n            .statusBarsPadding()\n            .navigationBarsPadding()\n    ) {\n        // الشريط العلوي\n        Row(\n            modifier = Modifier\n                .fillMaxWidth()\n                .background(AppColors.topBarBackground(isDark))\n                .padding(horizontal = 12.dp, vertical = 10.dp),\n            verticalAlignment = Alignment.CenterVertically\n        ) {\n            IconButton(onClick = onClose) {\n                Icon(\n                    Icons.AutoMirrored.Filled.ArrowBack,\n                    contentDescription = stringResource(R.string.back),\n                    tint = MaterialTheme.colorScheme.onBackground\n                )\n            }\n            Column(modifier = Modifier.weight(1f)) {\n                Text(\n                    text = stringResource(R.string.catch_log_title),\n                    fontSize = 17.sp,\n                    fontWeight = FontWeight.Bold,\n                    color = MaterialTheme.colorScheme.onBackground,\n                    maxLines = 1,\n                    overflow = TextOverflow.Ellipsis\n                )\n                Text(\n                    text = "com.logistics.rider.hungerstation",\n                    fontSize = 11.sp,\n                    fontFamily = FontFamily.Monospace,\n                    color = AccentGreen,\n                    maxLines = 1,\n                    overflow = TextOverflow.Ellipsis\n                )\n            }\n\n            IconButton(\n                onClick = { viewModel.refreshCatchLogs() }\n            ) {\n                Icon(\n                    Icons.Rounded.Refresh,\n                    contentDescription = stringResource(R.string.catch_log_refresh),\n                    tint = AccentBlue\n                )\n            }\n\n            IconButton(\n                onClick = {\n                    if (filteredLogs.isNotEmpty()) {\n                        val fmt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US)\n                        val textToCopy = filteredLogs.joinToString("\\n") { item ->\n                            val timeStr = fmt.format(Date(item.timestamp))\n                            val coords = if (item.lat != null && item.lng != null) " [${item.lat}, ${item.lng}]" else ""\n                            "[$timeStr] [${item.category}] (${item.packageName}) ${item.title} - ${item.detail}$coords (x${item.hitCount})"\n                        }\n                        clipboardManager.setText(AnnotatedString(textToCopy))\n                        Toast.makeText(context, context.getString(R.string.copied_to_clipboard), Toast.LENGTH_SHORT).show()\n                    }\n                }\n            ) {\n                Icon(\n                    Icons.Outlined.ContentCopy,\n                    contentDescription = stringResource(R.string.copy),\n                    tint = MaterialTheme.colorScheme.onBackground\n                )\n            }\n\n            IconButton(\n                onClick = { showClearConfirm = true }\n            ) {\n                Icon(\n                    Icons.Rounded.DeleteSweep,\n                    contentDescription = stringResource(R.string.catch_log_clear),\n                    tint = MaterialTheme.colorScheme.error\n                )\n            }\n        }\n\n        HorizontalDivider(color = MaterialTheme.colorScheme.outline, thickness = 0.5.dp)\n\n        // بطاقة حالة الحزمة المستهدفة ومفاتيح التحكم\n        Card(\n            modifier = Modifier\n                .fillMaxWidth()\n                .padding(horizontal = 16.dp, vertical = 10.dp),\n            shape = RoundedCornerShape(12.dp),\n            colors = CardDefaults.cardColors(containerColor = AppColors.cardBackground(isDark)),\n            border = BorderStroke(1.dp, AccentGreen.copy(alpha = 0.25f))\n        ) {\n            Column(modifier = Modifier.padding(12.dp)) {\n                Row(\n                    modifier = Modifier.fillMaxWidth(),\n                    verticalAlignment = Alignment.CenterVertically,\n                    horizontalArrangement = Arrangement.SpaceBetween\n                ) {\n                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {\n                        Box(\n                            modifier = Modifier\n                                .size(10.dp)\n                                .clip(CircleShape)\n                                .background(if (uiState.enableCatchLog) AccentGreen else MaterialTheme.colorScheme.outline)\n                        )\n                        Spacer(Modifier.width(8.dp))\n                        Column {\n                            Text(\n                                text = stringResource(R.string.catch_log_exclusive_pkg),\n                                fontSize = 13.sp,\n                                fontWeight = FontWeight.SemiBold,\n                                color = MaterialTheme.colorScheme.onBackground\n                            )\n                            Text(\n                                text = stringResource(R.string.catch_log_exclusive_desc),\n                                fontSize = 11.sp,\n                                color = AppColors.textSecondary(isDark)\n                            )\n                        }\n                    }\n                    Switch(\n                        checked = uiState.enableCatchLog,\n                        onCheckedChange = { viewModel.toggleEnableCatchLog() }\n                    )\n                }\n\n                Spacer(Modifier.height(8.dp))\n                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))\n                Spacer(Modifier.height(8.dp))\n\n                // إحصائيات سريعة\n                Row(\n                    modifier = Modifier.fillMaxWidth(),\n                    horizontalArrangement = Arrangement.SpaceBetween,\n                    verticalAlignment = Alignment.CenterVertically\n                ) {\n                    StatBadge(\n                        label = stringResource(R.string.catch_cat_order),\n                        count = orderCount,\n                        color = AccentOrange\n                    )\n                    StatBadge(\n                        label = stringResource(R.string.catch_cat_location),\n                        count = locCount,\n                        color = AccentBlue\n                    )\n                    StatBadge(\n                        label = stringResource(R.string.catch_cat_security),\n                        count = secCount,\n                        color = Color(0xFFAB47BC)\n                    )\n                    StatBadge(\n                        label = stringResource(R.string.catch_cat_env),\n                        count = envCount,\n                        color = AccentGreen\n                    )\n                }\n            }\n        }\n\n        // شريط البحث والفلترة\n        OutlinedTextField(\n            value = searchQuery,\n            onValueChange = { searchQuery = it },\n            placeholder = {\n                Text(\n                    stringResource(R.string.catch_log_search_hint),\n                    fontSize = 13.sp,\n                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f)\n                )\n            },\n            leadingIcon = {\n                Icon(Icons.Rounded.Search, contentDescription = null, tint = AccentBlue, modifier = Modifier.size(18.dp))\n            },\n            trailingIcon = {\n                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(end = 8.dp)) {\n                    if (searchQuery.isNotEmpty()) {\n                        IconButton(onClick = { searchQuery = "" }, modifier = Modifier.size(28.dp)) {\n                            Icon(Icons.Rounded.Close, contentDescription = null, modifier = Modifier.size(16.dp))\n                        }\n                    }\n                    FilterChip(\n                        selected = uiState.catchLogAutoRefresh,\n                        onClick = { viewModel.toggleCatchLogAutoRefresh() },\n                        label = {\n                            Text(\n                                stringResource(R.string.catch_log_live),\n                                fontSize = 11.sp\n                            )\n                        },\n                        leadingIcon = {\n                            Box(\n                                modifier = Modifier\n                                    .size(6.dp)\n                                    .clip(CircleShape)\n                                    .background(if (uiState.catchLogAutoRefresh) AccentGreen else MaterialTheme.colorScheme.outline)\n                            )\n                        }\n                    )\n                }\n            },\n            singleLine = true,\n            modifier = Modifier\n                .fillMaxWidth()\n                .padding(horizontal = 16.dp),\n            shape = RoundedCornerShape(12.dp),\n            colors = OutlinedTextFieldDefaults.colors(\n                focusedBorderColor = AccentBlue,\n                unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)\n            )\n        )\n\n        Spacer(Modifier.height(8.dp))\n\n        // أزرار تصنيف السجل\n        val categories = listOf(\n            CatchLogCategory.ALL to stringResource(R.string.catch_cat_all),\n            CatchLogCategory.ORDER to stringResource(R.string.catch_cat_order),\n            CatchLogCategory.LOCATION to stringResource(R.string.catch_cat_location),\n            CatchLogCategory.SECURITY to stringResource(R.string.catch_cat_security),\n            CatchLogCategory.ENV to stringResource(R.string.catch_cat_env),\n            CatchLogCategory.SYSTEM to stringResource(R.string.catch_cat_system)\n        )\n\n        Row(\n            modifier = Modifier\n                .fillMaxWidth()\n                .horizontalScroll(rememberScrollState())\n                .padding(horizontal = 16.dp, vertical = 4.dp),\n            horizontalArrangement = Arrangement.spacedBy(8.dp)\n        ) {\n            categories.forEach { (cat, label) ->\n                val isSelected = uiState.selectedCatchLogCategory == cat\n                FilterChip(\n                    selected = isSelected,\n                    onClick = { viewModel.setCatchLogCategory(cat) },\n                    label = { Text(label, fontSize = 12.sp) },\n                    colors = FilterChipDefaults.filterChipColors(\n                        selectedContainerColor = AccentBlue.copy(alpha = 0.18f),\n                        selectedLabelColor = AccentBlue\n                    )\n                )\n            }\n        }\n\n        Spacer(Modifier.height(4.dp))\n\n        // قائمة السجلات\n        if (filteredLogs.isEmpty()) {\n            Box(\n                modifier = Modifier\n                    .fillMaxWidth()\n                    .weight(1f)\n                    .padding(24.dp),\n                contentAlignment = Alignment.Center\n            ) {\n                Column(horizontalAlignment = Alignment.CenterHorizontally) {\n                    Icon(\n                        Icons.Rounded.Radar,\n                        contentDescription = null,\n                        tint = MaterialTheme.colorScheme.outline,\n                        modifier = Modifier.size(48.dp)\n                    )\n                    Spacer(Modifier.height(12.dp))\n                    Text(\n                        text = stringResource(R.string.catch_log_empty),\n                        fontSize = 14.sp,\n                        fontWeight = FontWeight.Medium,\n                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f)\n                    )\n                    Spacer(Modifier.height(6.dp))\n                    Text(\n                        text = stringResource(R.string.catch_log_empty_hint),\n                        fontSize = 12.sp,\n                        color = MaterialTheme.colorScheme.outline\n                    )\n                }\n            }\n        } else {\n            LazyColumn(\n                modifier = Modifier\n                    .fillMaxWidth()\n                    .weight(1f)\n                    .padding(horizontal = 16.dp),\n                verticalArrangement = Arrangement.spacedBy(8.dp),\n                contentPadding = PaddingValues(vertical = 8.dp)\n            ) {\n                items(filteredLogs, key = { it.id }) { entry ->\n                    CatchLogItemCard(\n                        entry = entry,\n                        isDark = isDark,\n                        onCopy = {\n                            val coordPart = if (entry.lat != null && entry.lng != null) " (${entry.lat}, ${entry.lng})" else ""\n                            clipboardManager.setText(\n                                AnnotatedString("[${entry.category}] ${entry.title}: ${entry.detail}$coordPart")\n                            )\n                            Toast.makeText(context, context.getString(R.string.copied_to_clipboard), Toast.LENGTH_SHORT).show()\n                        },\n                        onApplyCoordinates = { lat, lng ->\n                            viewModel.updateLatitude(String.format(Locale.US, "%.6f", lat))\n                            viewModel.updateLongitude(String.format(Locale.US, "%.6f", lng))\n                            Toast.makeText(\n                                context,\n                                context.getString(R.string.catch_log_coords_applied),\n                                Toast.LENGTH_SHORT\n                            ).show()\n                        }\n                    )\n                }\n            }\n        }\n    }\n\n    if (showClearConfirm) {\n        AlertDialog(\n            onDismissRequest = { showClearConfirm = false },\n            title = { Text(stringResource(R.string.catch_log_clear)) },\n            text = { Text(stringResource(R.string.catch_log_clear_confirm)) },\n            confirmButton = {\n                TextButton(\n                    onClick = {\n                        viewModel.clearCatchLogs()\n                        showClearConfirm = false\n                    }\n                ) {\n                    Text(stringResource(R.string.clear_all), color = MaterialTheme.colorScheme.error)\n                }\n            },\n            dismissButton = {\n                TextButton(onClick = { showClearConfirm = false }) {\n                    Text(stringResource(R.string.cancel))\n                }\n            }\n        )\n    }\n}\n\n@Composable\nprivate fun StatBadge(label: String, count: Int, color: Color) {\n    Row(\n        verticalAlignment = Alignment.CenterVertically,\n        modifier = Modifier\n            .clip(RoundedCornerShape(8.dp))\n            .background(color.copy(alpha = 0.12f))\n            .padding(horizontal = 8.dp, vertical = 4.dp)\n    ) {\n        Text(\n            text = label,\n            fontSize = 11.sp,\n            color = color,\n            fontWeight = FontWeight.Medium\n        )\n        Spacer(Modifier.width(4.dp))\n        Text(\n            text = count.toString(),\n            fontSize = 12.sp,\n            color = color,\n            fontWeight = FontWeight.Bold\n        )\n    }\n}\n\n@Composable\nprivate fun CatchLogItemCard(\n    entry: CatchLogEntry,\n    isDark: Boolean,\n    onCopy: () -> Unit,\n    onApplyCoordinates: (Double, Double) -> Unit\n) {\n    val (catColor, catIcon, catLabel) = when (entry.category.uppercase()) {\n        "ORDER" -> Triple(AccentOrange, Icons.Rounded.DeliveryDining, stringResource(R.string.catch_cat_order))\n        "LOCATION" -> Triple(AccentBlue, Icons.Rounded.MyLocation, stringResource(R.string.catch_cat_location))\n        "SECURITY" -> Triple(Color(0xFFAB47BC), Icons.Rounded.Shield, stringResource(R.string.catch_cat_security))\n        "ENV" -> Triple(AccentGreen, Icons.Rounded.CellTower, stringResource(R.string.catch_cat_env))\n        else -> Triple(Color(0xFF78909C), Icons.Rounded.Terminal, stringResource(R.string.catch_cat_system))\n    }\n\n    val timeStr = remember(entry.timestamp) {\n        SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date(entry.timestamp))\n    }\n\n    Card(\n        shape = RoundedCornerShape(12.dp),\n        colors = CardDefaults.cardColors(containerColor = AppColors.cardBackground(isDark)),\n        border = BorderStroke(0.5.dp, catColor.copy(alpha = 0.35f)),\n        modifier = Modifier.fillMaxWidth()\n    ) {\n        Column(modifier = Modifier.padding(12.dp)) {\n            Row(\n                modifier = Modifier.fillMaxWidth(),\n                verticalAlignment = Alignment.CenterVertically\n            ) {\n                Box(\n                    modifier = Modifier\n                        .size(28.dp)\n                        .clip(RoundedCornerShape(6.dp))\n                        .background(catColor.copy(alpha = 0.15f)),\n                    contentAlignment = Alignment.Center\n                ) {\n                    Icon(catIcon, contentDescription = null, tint = catColor, modifier = Modifier.size(16.dp))\n                }\n                Spacer(Modifier.width(8.dp))\n                Text(\n                    text = catLabel,\n                    fontSize = 11.sp,\n                    fontWeight = FontWeight.Bold,\n                    color = catColor,\n                    modifier = Modifier\n                        .clip(RoundedCornerShape(4.dp))\n                        .background(catColor.copy(alpha = 0.12f))\n                        .padding(horizontal = 6.dp, vertical = 2.dp)\n                )\n                Spacer(Modifier.width(8.dp))\n                if (entry.hitCount > 1) {\n                    Text(\n                        text = "×${entry.hitCount}",\n                        fontSize = 11.sp,\n                        fontWeight = FontWeight.Bold,\n                        color = AccentOrange,\n                        modifier = Modifier\n                            .clip(RoundedCornerShape(4.dp))\n                            .background(AccentOrange.copy(alpha = 0.12f))\n                            .padding(horizontal = 6.dp, vertical = 2.dp)\n                    )\n                }\n                Spacer(Modifier.weight(1f))\n                Text(\n                    text = timeStr,\n                    fontSize = 11.sp,\n                    fontFamily = FontFamily.Monospace,\n                    color = AppColors.textSecondary(isDark)\n                )\n                Spacer(Modifier.width(4.dp))\n                IconButton(onClick = onCopy, modifier = Modifier.size(24.dp)) {\n                    Icon(\n                        Icons.Outlined.ContentCopy,\n                        contentDescription = stringResource(R.string.copy),\n                        tint = AppColors.textSecondary(isDark),\n                        modifier = Modifier.size(14.dp)\n                    )\n                }\n            }\n\n            Spacer(Modifier.height(6.dp))\n\n            Text(\n                text = entry.title,\n                fontSize = 14.sp,\n                fontWeight = FontWeight.SemiBold,\n                color = MaterialTheme.colorScheme.onBackground\n            )\n\n            Spacer(Modifier.height(3.dp))\n\n            Text(\n                text = entry.detail,\n                fontSize = 12.sp,\n                color = AppColors.textSecondary(isDark)\n            )\n\n            if (entry.lat != null && entry.lng != null && (entry.lat != 0.0 || entry.lng != 0.0)) {\n                Spacer(Modifier.height(8.dp))\n                Row(\n                    modifier = Modifier\n                        .fillMaxWidth()\n                        .clip(RoundedCornerShape(8.dp))\n                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))\n                        .padding(horizontal = 10.dp, vertical = 6.dp),\n                    verticalAlignment = Alignment.CenterVertically,\n                    horizontalArrangement = Arrangement.SpaceBetween\n                ) {\n                    Row(verticalAlignment = Alignment.CenterVertically) {\n                        Icon(\n                            Icons.Rounded.Place,\n                            contentDescription = null,\n                            tint = AccentBlue,\n                            modifier = Modifier.size(15.dp)\n                        )\n                        Spacer(Modifier.width(6.dp))\n                        Text(\n                            text = "${String.format(Locale.US, "%.6f", entry.lat)}, ${String.format(Locale.US, "%.6f", entry.lng)}",\n                            fontSize = 12.sp,\n                            fontFamily = FontFamily.Monospace,\n                            color = MaterialTheme.colorScheme.onBackground\n                        )\n                    }\n                    Text(\n                        text = stringResource(R.string.catch_log_use_coords),\n                        fontSize = 12.sp,\n                        fontWeight = FontWeight.Bold,\n                        color = AccentBlue,\n                        modifier = Modifier\n                            .clip(RoundedCornerShape(6.dp))\n                            .clickable { onApplyCoordinates(entry.lat, entry.lng) }\n                            .padding(horizontal = 8.dp, vertical = 2.dp)\n                    )\n                }\n            }\n        }\n    }\n}\n')
+
+          write_file('app/src/main/java/com/suseoaa/locationspoofer/provider/SpooferProvider.kt', 'package com.suseoaa.locationspoofer.provider\n\nimport android.content.ContentProvider\nimport android.content.ContentValues\nimport android.database.Cursor\nimport android.database.MatrixCursor\nimport android.net.Uri\nimport com.suseoaa.locationspoofer.data.model.CatchLogEntry\nimport java.util.concurrent.CopyOnWriteArrayList\n\nclass SpooferProvider : ContentProvider() {\n\n    companion object {\n        const val TARGET_PACKAGE = "com.logistics.rider.hungerstation"\n        var isActive = false\n        var latitude = 0.0      // GCJ-02 / WGS-84\n        var longitude = 0.0     // GCJ-02 / WGS-84\n        var wifiJson = "[]"\n        var cellJson = "[]"\n        var bluetoothJson = "[]"\n        var simMode = "STILL"\n        var simBearing = 0f\n        var startTimestamp = 0L\n        var routeJson = "[]"\n        var isRouteMode = false\n        var enableJitter = true\n        var enableCatchLog = true\n\n        private const val MAX_MEMORY_LOGS = 500\n        val memoryCatchLogs = CopyOnWriteArrayList<CatchLogEntry>()\n\n        fun addCatchLog(entry: CatchLogEntry) {\n            if (entry.packageName.substringBefore(":") != TARGET_PACKAGE) return\n            memoryCatchLogs.add(0, entry)\n            while (memoryCatchLogs.size > MAX_MEMORY_LOGS) {\n                try {\n                    memoryCatchLogs.removeAt(memoryCatchLogs.lastIndex)\n                } catch (_: Exception) {\n                    break\n                }\n            }\n        }\n\n        fun clearMemoryLogs() {\n            memoryCatchLogs.clear()\n        }\n    }\n\n    override fun onCreate(): Boolean = true\n\n    override fun query(\n        uri: Uri, projection: Array<out String>?, selection: String?,\n        selectionArgs: Array<out String>?, sortOrder: String?\n    ): Cursor {\n        if (uri.path == "/logs") {\n            val cursor = MatrixCursor(\n                arrayOf("id", "timestamp", "packageName", "category", "title", "detail", "lat", "lng", "hitCount")\n            )\n            for (log in memoryCatchLogs) {\n                cursor.addRow(\n                    arrayOf<Any?>(\n                        log.id,\n                        log.timestamp,\n                        log.packageName,\n                        log.category,\n                        log.title,\n                        log.detail,\n                        log.lat,\n                        log.lng,\n                        log.hitCount\n                    )\n                )\n            }\n            return cursor\n        }\n\n        val cursor = MatrixCursor(\n            arrayOf(\n                "active", "lat", "lng", "wifi_json", "cell_json", "bluetooth_json",\n                "sim_mode", "sim_bearing", "start_timestamp",\n                "route_json", "is_route_mode", "enable_catch_log"\n            )\n        )\n        cursor.addRow(\n            arrayOf(\n                if (isActive) 1 else 0,\n                latitude,\n                longitude,\n                wifiJson,\n                cellJson,\n                bluetoothJson,\n                simMode,\n                simBearing,\n                startTimestamp,\n                routeJson,\n                if (isRouteMode) 1 else 0,\n                if (enableCatchLog) 1 else 0\n            )\n        )\n        return cursor\n    }\n\n    override fun getType(uri: Uri): String? = null\n\n    override fun insert(uri: Uri, values: ContentValues?): Uri? {\n        if (values != null) {\n            val pkg = values.getAsString("packageName") ?: TARGET_PACKAGE\n            if (pkg.substringBefore(":") == TARGET_PACKAGE) {\n                val entry = CatchLogEntry(\n                    id = values.getAsLong("id") ?: System.currentTimeMillis(),\n                    timestamp = values.getAsLong("timestamp") ?: System.currentTimeMillis(),\n                    packageName = TARGET_PACKAGE,\n                    category = values.getAsString("category") ?: "LOCATION",\n                    title = values.getAsString("title") ?: "",\n                    detail = values.getAsString("detail") ?: "",\n                    lat = values.getAsDouble("lat"),\n                    lng = values.getAsDouble("lng"),\n                    hitCount = values.getAsInteger("hitCount") ?: 1\n                )\n                addCatchLog(entry)\n            }\n        }\n        return uri\n    }\n\n    override fun delete(uri: Uri, selection: String?, selectionArgs: Array<out String>?): Int {\n        clearMemoryLogs()\n        return 1\n    }\n\n    override fun update(\n        uri: Uri, values: ContentValues?,\n        selection: String?, selectionArgs: Array<out String>?\n    ): Int = 0\n}\n')
+
+          write_file('app/src/main/java/com/suseoaa/locationspoofer/utils/RootManager.kt', 'package com.suseoaa.locationspoofer.utils\n\nimport kotlinx.coroutines.Dispatchers\nimport kotlinx.coroutines.withContext\nimport java.io.BufferedReader\nimport java.io.InputStreamReader\n\nclass RootManager {\n\n    companion object {\n        const val CATCH_LOG_FILE = "/data/local/tmp/locationspoofer_catch_log.jsonl"\n    }\n\n    suspend fun checkRootAccess(): Boolean = withContext(Dispatchers.IO) {\n        executeCommand("id").contains("uid=0(root)")\n    }\n\n    suspend fun grantMockLocation(): Boolean = withContext(Dispatchers.IO) {\n        val result =\n            executeCommand("appops set com.suseoaa.locationspoofer android:mock_location allow")\n        result != "ERROR"\n    }\n\n    suspend fun revokeMockLocation(): Boolean = withContext(Dispatchers.IO) {\n        val result =\n            executeCommand("appops set com.suseoaa.locationspoofer android:mock_location deny")\n        result != "ERROR"\n    }\n\n    suspend fun initCatchLogFile(): Boolean = withContext(Dispatchers.IO) {\n        val cmd = """\n            touch $CATCH_LOG_FILE\n            chmod 666 $CATCH_LOG_FILE\n            chcon u:object_r:shell_data_file:s0 $CATCH_LOG_FILE\n        """.trimIndent()\n        executeCommand(cmd) != "ERROR"\n    }\n\n    suspend fun readCatchLogsRaw(): String = withContext(Dispatchers.IO) {\n        val cmd = """\n            if [ -f $CATCH_LOG_FILE ]; then\n                tail -n 300 $CATCH_LOG_FILE\n            fi\n            logcat -d -s HS_CatchLog:I | grep -F \'{"id":\' | sed \'s/.*HS_CatchLog[^:]*: //\' | tail -n 200\n        """.trimIndent()\n        val res = executeCommand(cmd)\n        if (res == "ERROR" || res == "SUCCESS") "" else res\n    }\n\n    suspend fun clearCatchLogs(): Boolean = withContext(Dispatchers.IO) {\n        val cmd = """\n            echo -n "" > $CATCH_LOG_FILE\n            chmod 666 $CATCH_LOG_FILE\n            chcon u:object_r:shell_data_file:s0 $CATCH_LOG_FILE\n            logcat -c 2>/dev/null || true\n        """.trimIndent()\n        executeCommand(cmd) != "ERROR"\n    }\n\n    fun executeCommand(command: String): String {\n        return try {\n            val process = Runtime.getRuntime().exec(arrayOf("su", "-c", command))\n            val reader = BufferedReader(InputStreamReader(process.inputStream))\n            val output = reader.readText()\n            process.waitFor()\n            output.ifEmpty { "SUCCESS" }\n        } catch (e: Exception) {\n            "ERROR"\n        }\n    }\n}\n')
+
+          write_file('app/src/main/java/com/suseoaa/locationspoofer/utils/ConfigManager.kt', 'package com.suseoaa.locationspoofer.utils\n\nimport com.suseoaa.locationspoofer.data.model.RoutePoint\nimport kotlinx.coroutines.Dispatchers\nimport kotlinx.coroutines.withContext\nimport org.json.JSONArray\nimport org.json.JSONObject\n\nclass ConfigManager(private val rootManager: RootManager) {\n\n    companion object {\n        const val TARGET_PACKAGE = "com.logistics.rider.hungerstation"\n    }\n\n    suspend fun saveConfig(\n        lat: Double,\n        lng: Double,\n        active: Boolean,\n        simMode: String = "STILL",\n        simBearing: Float = 0f,\n        startTimestamp: Long = System.currentTimeMillis(),\n        routePoints: List<RoutePoint> = emptyList(),\n        isRouteMode: Boolean = false,\n        wifiJson: String = "[]",\n        appCoordinateSystems: Map<String, String> = emptyMap(),\n        cellJson: String = "[]",\n        bluetoothJson: String = "[]",\n        mockWifi: Boolean = true,\n        mockCell: Boolean = true,\n        mockBluetooth: Boolean = true,\n        enableJitter: Boolean = true,\n        altitude: Double = 0.0,\n        satelliteCount: Int = 20,\n        enableCatchLog: Boolean = true\n    ) = withContext(Dispatchers.IO) {\n        val routeArray = JSONArray()\n        routePoints.forEach { p ->\n            val obj = JSONObject()\n            obj.put("lat", p.lat)\n            obj.put("lng", p.lng)\n            routeArray.put(obj)\n        }\n\n        val json = JSONObject().apply {\n            put("lat", lat)\n            put("lng", lng)\n            put("active", active)\n            put("target_package", TARGET_PACKAGE)\n            put("enable_catch_log", enableCatchLog)\n            put("sim_mode", simMode)\n            put("sim_bearing", simBearing.toDouble())\n            put("start_timestamp", startTimestamp)\n            put("route_points", routeArray)\n            put("is_route_mode", isRouteMode)\n            val wifiObj = try {\n                JSONObject(wifiJson)\n            } catch (e: Exception) {\n                JSONObject().apply {\n                    put("isConnected", false)\n                    put("connectedWifi", JSONObject.NULL)\n                    put("nearbyWifi", JSONArray())\n                }\n            }\n            put("wifi_json", wifiObj)\n            put("cell_json", JSONArray(cellJson))\n            put("bluetooth_json", JSONArray(bluetoothJson))\n            put("mock_wifi", mockWifi)\n            put("mock_cell", mockCell)\n            put("mock_bluetooth", mockBluetooth)\n            put("enable_jitter", enableJitter)\n            put("altitude", altitude)\n            put("satellite_count", satelliteCount)\n            \n            val coordSysObj = JSONObject()\n            // افتراضياً ضبط WGS-84 لحزمة هنقرستيشن لتجنب إزاحة الإحداثيات\n            coordSysObj.put(TARGET_PACKAGE, appCoordinateSystems[TARGET_PACKAGE] ?: "WGS-84")\n            appCoordinateSystems.forEach { (pkg, sys) ->\n                if (pkg == TARGET_PACKAGE) {\n                    coordSysObj.put(pkg, sys)\n                }\n            }\n            put("app_coordinate_systems", coordSysObj)\n        }\n\n        // 使用heredoc写入,避免JSON中的特殊字符(单引号等)被shell误解析\n        val escapedJson = json.toString().replace("\\\\", "\\\\\\\\").replace("\\"", "\\\\\\"")\n        val command = """\n            echo "$escapedJson" > /data/local/tmp/locationspoofer_config.json\n            chmod 777 /data/local/tmp/locationspoofer_config.json\n            chcon u:object_r:shell_data_file:s0 /data/local/tmp/locationspoofer_config.json\n            touch ${RootManager.CATCH_LOG_FILE}\n            chmod 666 ${RootManager.CATCH_LOG_FILE}\n            chcon u:object_r:shell_data_file:s0 ${RootManager.CATCH_LOG_FILE}\n        """.trimIndent()\n\n        rootManager.executeCommand(command)\n    }\n}\n')
+
+          write_file('app/src/main/java/com/suseoaa/locationspoofer/utils/LSPosedManager.kt', 'package com.suseoaa.locationspoofer.utils\n\nimport android.content.Context\nimport android.content.pm.PackageManager\nimport com.suseoaa.locationspoofer.LocationApp\nimport com.suseoaa.locationspoofer.data.model.AppInfoItem\n\nclass LSPosedManager {\n    companion object {\n        const val TARGET_PACKAGE = "com.logistics.rider.hungerstation"\n    }\n\n    fun isModuleActive(): Boolean {\n        return LocationApp.isModuleActive.value\n    }\n\n    fun getHookedApps(context: Context): List<AppInfoItem> {\n        val pm = context.packageManager\n        val pkg = TARGET_PACKAGE\n        return listOf(\n            try {\n                val info = pm.getApplicationInfo(pkg, 0)\n                val label = pm.getApplicationLabel(info).toString()\n                val isSystem = (info.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0 ||\n                               (info.flags and android.content.pm.ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0\n                AppInfoItem(pkg, label, isSystem)\n            } catch (e: Exception) {\n                AppInfoItem(pkg, "HungerStation Rider ($pkg)", false)\n            }\n        )\n    }\n}\n')
+
+          write_file('app/src/main/java/com/suseoaa/locationspoofer/utils/SettingsManager.kt', 'package com.suseoaa.locationspoofer.utils\n\nimport android.content.Context\nimport android.content.SharedPreferences\nimport com.suseoaa.locationspoofer.data.model.RoutePoint\nimport com.suseoaa.locationspoofer.data.model.SavedLocation\nimport com.suseoaa.locationspoofer.data.model.SavedRoute\nimport org.json.JSONArray\nimport org.json.JSONObject\n\nclass SettingsManager(context: Context) {\n    private val prefs: SharedPreferences = context.getSharedPreferences("app_settings", Context.MODE_PRIVATE)\n\n    var isDarkMode: Boolean\n        get() = prefs.getBoolean("is_dark_mode", true)\n        set(value) = prefs.edit().putBoolean("is_dark_mode", value).apply()\n\n    var language: String\n        get() = prefs.getString("language", "") ?: ""\n        set(value) = prefs.edit().putString("language", value).apply()\n\n    var isLanguageSet: Boolean\n        get() = prefs.getBoolean("is_language_set", false)\n        set(value) = prefs.edit().putBoolean("is_language_set", value).apply()\n\n    var amapApiKey: String\n        get() = prefs.getString("amap_api_key", "") ?: ""\n        set(value) = prefs.edit().putString("amap_api_key", value).apply()\n\n    var baiduApiKey: String\n        get() = prefs.getString("baidu_api_key", "") ?: ""\n        set(value) = prefs.edit().putString("baidu_api_key", value).apply()\n\n    var googleApiKey: String\n        get() = prefs.getString("google_api_key", "") ?: ""\n        set(value) = prefs.edit().putString("google_api_key", value).apply()\n\n    var mapType: String\n        get() = prefs.getString("map_type", "NORMAL") ?: "NORMAL"\n        set(value) = prefs.edit().putString("map_type", value).apply()\n\n    var mapEngine: String\n        get() = prefs.getString("map_engine", "AUTO") ?: "AUTO"\n        set(value) = prefs.edit().putString("map_engine", value).apply()\n\n    var ignoredVersion: String\n        get() = prefs.getString("ignored_version", "") ?: ""\n        set(value) = prefs.edit().putString("ignored_version", value).apply()\n\n    var isSpoofingActive: Boolean\n        get() = prefs.getBoolean("is_spoofing_active", false)\n        set(value) = prefs.edit().putBoolean("is_spoofing_active", value).apply()\n\n    var lastSpoofedLat: String\n        get() = prefs.getString("last_spoofed_lat", "0") ?: "0"\n        set(value) = prefs.edit().putString("last_spoofed_lat", value).apply()\n\n    var lastSpoofedLng: String\n        get() = prefs.getString("last_spoofed_lng", "0") ?: "0"\n        set(value) = prefs.edit().putString("last_spoofed_lng", value).apply()\n\n    var mockWifi: Boolean\n        get() = prefs.getBoolean("mock_wifi", true)\n        set(value) = prefs.edit().putBoolean("mock_wifi", value).apply()\n\n    var mockCell: Boolean\n        get() = prefs.getBoolean("mock_cell", true)\n        set(value) = prefs.edit().putBoolean("mock_cell", value).apply()\n\n    var mockBluetooth: Boolean\n        get() = prefs.getBoolean("mock_bluetooth", true)\n        set(value) = prefs.edit().putBoolean("mock_bluetooth", value).apply()\n\n    var enableJitter: Boolean\n        get() = prefs.getBoolean("enable_jitter", true)\n        set(value) = prefs.edit().putBoolean("enable_jitter", value).apply()\n\n    var enableCatchLog: Boolean\n        get() = prefs.getBoolean("enable_catch_log", true)\n        set(value) = prefs.edit().putBoolean("enable_catch_log", value).apply()\n\n    var altitude: String\n        get() = prefs.getString("altitude", "0.0") ?: "0.0"\n        set(value) = prefs.edit().putString("altitude", value).apply()\n\n    var satelliteCount: String\n        get() = prefs.getString("satellite_count", "10") ?: "10"\n        set(value) = prefs.edit().putString("satellite_count", value).apply()\n\n    fun getSavedLocations(): List<SavedLocation> {\n        val jsonString = prefs.getString("saved_locations", "[]") ?: "[]"\n        val list = mutableListOf<SavedLocation>()\n        try {\n            val jsonArray = JSONArray(jsonString)\n            for (i in 0 until jsonArray.length()) {\n                val obj = jsonArray.getJSONObject(i)\n                list.add(SavedLocation(obj.getString("name"), obj.getDouble("lat"), obj.getDouble("lng")))\n            }\n        } catch (e: Exception) {\n            e.printStackTrace()\n        }\n        return list\n    }\n\n    fun addSavedLocation(location: SavedLocation) {\n        val list = getSavedLocations().toMutableList()\n        list.add(location)\n        saveLocationList(list)\n    }\n\n    fun removeSavedLocation(location: SavedLocation) {\n        val list = getSavedLocations().toMutableList()\n        list.removeAll { it.lat == location.lat && it.lng == location.lng }\n        saveLocationList(list)\n    }\n\n    private fun saveLocationList(list: List<SavedLocation>) {\n        val jsonArray = JSONArray()\n        list.forEach {\n            val obj = JSONObject()\n            obj.put("name", it.name)\n            obj.put("lat", it.lat)\n            obj.put("lng", it.lng)\n            jsonArray.put(obj)\n        }\n        prefs.edit().putString("saved_locations", jsonArray.toString()).apply()\n    }\n\n    fun getSavedRoutes(): List<SavedRoute> {\n        val jsonString = prefs.getString("saved_routes", "[]") ?: "[]"\n        val list = mutableListOf<SavedRoute>()\n        try {\n            val jsonArray = JSONArray(jsonString)\n            for (i in 0 until jsonArray.length()) {\n                val obj = jsonArray.getJSONObject(i)\n                val pointsArray = obj.getJSONArray("points")\n                val points = (0 until pointsArray.length()).map { j ->\n                    val p = pointsArray.getJSONObject(j)\n                    RoutePoint(p.getDouble("lat"), p.getDouble("lng"))\n                }\n                list.add(SavedRoute(obj.getString("name"), points))\n            }\n        } catch (e: Exception) {\n            e.printStackTrace()\n        }\n        return list\n    }\n\n    fun addSavedRoute(route: SavedRoute) {\n        val list = getSavedRoutes().toMutableList()\n        list.add(route)\n        saveRouteList(list)\n    }\n\n    fun removeSavedRoute(route: SavedRoute) {\n        val list = getSavedRoutes().toMutableList()\n        list.removeAll { it.name == route.name }\n        saveRouteList(list)\n    }\n\n    private fun saveRouteList(list: List<SavedRoute>) {\n        val jsonArray = JSONArray()\n        list.forEach { route ->\n            val obj = JSONObject()\n            obj.put("name", route.name)\n            val pointsArray = JSONArray()\n            route.points.forEach { p ->\n                val pObj = JSONObject()\n                pObj.put("lat", p.lat)\n                pObj.put("lng", p.lng)\n                pointsArray.put(pObj)\n            }\n            obj.put("points", pointsArray)\n            jsonArray.put(obj)\n        }\n        prefs.edit().putString("saved_routes", jsonArray.toString()).apply()\n    }\n\n    fun getAppCoordinateSystems(): Map<String, String> {\n        val jsonString = prefs.getString("app_coordinate_systems", "{}") ?: "{}"\n        val map = mutableMapOf<String, String>()\n        try {\n            val jsonObj = JSONObject(jsonString)\n            for (key in jsonObj.keys()) {\n                map[key] = jsonObj.getString(key)\n            }\n        } catch (e: Exception) {\n            e.printStackTrace()\n        }\n        if (!map.containsKey("com.logistics.rider.hungerstation")) {\n            map["com.logistics.rider.hungerstation"] = "WGS-84"\n        }\n        return map\n    }\n\n    fun setAppCoordinateSystems(map: Map<String, String>) {\n        val jsonObj = JSONObject()\n        map.forEach { (k, v) -> jsonObj.put(k, v) }\n        prefs.edit().putString("app_coordinate_systems", jsonObj.toString()).apply()\n    }\n}\n')
+
+          write_file('app/src/main/java/com/suseoaa/locationspoofer/data/repository/SettingsRepository.kt', 'package com.suseoaa.locationspoofer.data.repository\n\nimport com.suseoaa.locationspoofer.data.model.SavedLocation\nimport com.suseoaa.locationspoofer.data.model.SavedRoute\nimport com.suseoaa.locationspoofer.utils.SettingsManager\n\nclass SettingsRepository(private val settingsManager: SettingsManager) {\n\n    fun getSavedLocations(): List<SavedLocation> = settingsManager.getSavedLocations()\n\n    fun addSavedLocation(location: SavedLocation) = settingsManager.addSavedLocation(location)\n\n    fun removeSavedLocation(location: SavedLocation) = settingsManager.removeSavedLocation(location)\n\n    fun getSavedRoutes(): List<SavedRoute> = settingsManager.getSavedRoutes()\n\n    fun addSavedRoute(route: SavedRoute) = settingsManager.addSavedRoute(route)\n\n    fun removeSavedRoute(route: SavedRoute) = settingsManager.removeSavedRoute(route)\n\n    fun isLanguageSet(): Boolean = settingsManager.isLanguageSet\n\n    fun setLanguageSet(value: Boolean) {\n        settingsManager.isLanguageSet = value\n    }\n\n    fun getLanguage(): String = settingsManager.language\n\n    fun setLanguage(value: String) {\n        settingsManager.language = value\n    }\n\n    fun getAmapApiKey(): String = settingsManager.amapApiKey\n\n    fun setAmapApiKey(value: String) {\n        settingsManager.amapApiKey = value\n    }\n\n    fun getBaiduApiKey(): String = settingsManager.baiduApiKey\n\n    fun setBaiduApiKey(value: String) {\n        settingsManager.baiduApiKey = value\n    }\n\n    fun getGoogleApiKey(): String = settingsManager.googleApiKey\n\n    fun setGoogleApiKey(value: String) {\n        settingsManager.googleApiKey = value\n    }\n\n    fun getMapType(): String = settingsManager.mapType\n\n    fun setMapType(value: String) {\n        settingsManager.mapType = value\n    }\n\n    fun getMapEngine(): String = settingsManager.mapEngine\n\n    fun setMapEngine(value: String) {\n        settingsManager.mapEngine = value\n    }\n\n    fun getIgnoredVersion(): String = settingsManager.ignoredVersion\n\n    fun setIgnoredVersion(value: String) {\n        settingsManager.ignoredVersion = value\n    }\n\n    fun getAppCoordinateSystems(): Map<String, String> = settingsManager.getAppCoordinateSystems()\n\n    fun setAppCoordinateSystems(map: Map<String, String>) = settingsManager.setAppCoordinateSystems(map)\n\n    var isSpoofingActive: Boolean\n        get() = settingsManager.isSpoofingActive\n        set(value) { settingsManager.isSpoofingActive = value }\n\n    var lastSpoofedLat: String\n        get() = settingsManager.lastSpoofedLat\n        set(value) { settingsManager.lastSpoofedLat = value }\n\n    var lastSpoofedLng: String\n        get() = settingsManager.lastSpoofedLng\n        set(value) { settingsManager.lastSpoofedLng = value }\n\n    var mockWifi: Boolean\n        get() = settingsManager.mockWifi\n        set(value) { settingsManager.mockWifi = value }\n\n    var mockCell: Boolean\n        get() = settingsManager.mockCell\n        set(value) { settingsManager.mockCell = value }\n\n    var mockBluetooth: Boolean\n        get() = settingsManager.mockBluetooth\n        set(value) { settingsManager.mockBluetooth = value }\n\n    var enableJitter: Boolean\n        get() = settingsManager.enableJitter\n        set(value) { settingsManager.enableJitter = value }\n\n    var enableCatchLog: Boolean\n        get() = settingsManager.enableCatchLog\n        set(value) { settingsManager.enableCatchLog = value }\n\n    var altitude: String\n        get() = settingsManager.altitude\n        set(value) { settingsManager.altitude = value }\n\n    var satelliteCount: String\n        get() = settingsManager.satelliteCount\n        set(value) { settingsManager.satelliteCount = value }\n}\n')
+
+          write_file('app/src/main/java/com/suseoaa/locationspoofer/data/repository/LocationRepository.kt', 'package com.suseoaa.locationspoofer.data.repository\n\nimport android.content.Context\nimport android.content.Intent\nimport com.suseoaa.locationspoofer.data.model.CatchLogEntry\nimport com.suseoaa.locationspoofer.data.model.RoutePoint\nimport com.suseoaa.locationspoofer.provider.SpooferProvider\nimport com.suseoaa.locationspoofer.service.SpoofingService\nimport com.suseoaa.locationspoofer.utils.ConfigManager\nimport com.suseoaa.locationspoofer.utils.LSPosedManager\nimport com.suseoaa.locationspoofer.utils.RootManager\nimport org.json.JSONArray\nimport org.json.JSONObject\n\nclass LocationRepository(\n    private val configManager: ConfigManager,\n    private val rootManager: RootManager,\n    private val lsposedManager: LSPosedManager,\n    private val settingsManager: com.suseoaa.locationspoofer.utils.SettingsManager,\n    private val savedRouteDao: com.suseoaa.locationspoofer.data.db.SavedRouteDao\n) {\n    suspend fun checkRootAccess(): Boolean = rootManager.checkRootAccess()\n\n    fun isModuleActive(): Boolean = lsposedManager.isModuleActive()\n\n    suspend fun initCatchLogFile(): Boolean = rootManager.initCatchLogFile()\n\n    suspend fun readCatchLogs(): List<CatchLogEntry> {\n        val raw = rootManager.readCatchLogsRaw()\n        val map = LinkedHashMap<Long, CatchLogEntry>()\n        for (mem in SpooferProvider.memoryCatchLogs) {\n            if (mem.packageName.substringBefore(":") == SpooferProvider.TARGET_PACKAGE) {\n                map[mem.id] = mem\n            }\n        }\n        if (raw.isNotBlank()) {\n            raw.lineSequence().forEach { line ->\n                val trimmed = line.trim()\n                if (trimmed.startsWith("{") && trimmed.endsWith("}")) {\n                    try {\n                        val obj = JSONObject(trimmed)\n                        val pkg = obj.optString("packageName", SpooferProvider.TARGET_PACKAGE)\n                        if (pkg.substringBefore(":") == SpooferProvider.TARGET_PACKAGE) {\n                            val id = obj.optLong("id", obj.optLong("timestamp", System.currentTimeMillis()))\n                            val entry = CatchLogEntry(\n                                id = id,\n                                timestamp = obj.optLong("timestamp", id),\n                                packageName = SpooferProvider.TARGET_PACKAGE,\n                                category = obj.optString("category", "LOCATION"),\n                                title = obj.optString("title", ""),\n                                detail = obj.optString("detail", ""),\n                                lat = if (obj.has("lat") && !obj.isNull("lat")) obj.optDouble("lat") else null,\n                                lng = if (obj.has("lng") && !obj.isNull("lng")) obj.optDouble("lng") else null,\n                                hitCount = obj.optInt("hitCount", 1)\n                            )\n                            val existing = map[id]\n                            if (existing == null || entry.hitCount >= existing.hitCount) {\n                                map[id] = entry\n                            }\n                        }\n                    } catch (_: Exception) {}\n                }\n            }\n        }\n        return map.values.sortedByDescending { it.timestamp }\n    }\n\n    suspend fun clearCatchLogs() {\n        SpooferProvider.clearMemoryLogs()\n        rootManager.clearCatchLogs()\n    }\n\n    suspend fun startSpoofing(\n        context: Context,\n        lat: Double,\n        lng: Double,\n        simMode: String,\n        simBearing: Float,\n        startTime: Long,\n        routePoints: List<RoutePoint>,\n        isRouteMode: Boolean,\n        appCoordinateSystems: Map<String, String>,\n        wifiJson: String = "[]",\n        cellJson: String = "[]",\n        bluetoothJson: String = "[]",\n        mockWifi: Boolean = true,\n        mockCell: Boolean = true,\n        mockBluetooth: Boolean = true,\n        enableJitter: Boolean = true,\n        enableCatchLog: Boolean = settingsManager.enableCatchLog\n    ) {\n        SpooferProvider.isActive = true\n        SpooferProvider.latitude = lat\n        SpooferProvider.longitude = lng\n        SpooferProvider.startTimestamp = startTime\n        SpooferProvider.simMode = simMode\n        SpooferProvider.simBearing = simBearing\n        SpooferProvider.wifiJson = wifiJson\n        SpooferProvider.cellJson = cellJson\n        SpooferProvider.bluetoothJson = bluetoothJson\n        SpooferProvider.routeJson = routePointsToJson(routePoints)\n        SpooferProvider.isRouteMode = isRouteMode\n        SpooferProvider.enableJitter = enableJitter\n        SpooferProvider.enableCatchLog = enableCatchLog\n\n        val alt = settingsManager.altitude.toDoubleOrNull() ?: 0.0\n        val satCount = settingsManager.satelliteCount.toIntOrNull() ?: 20\n        configManager.saveConfig(\n            lat, lng, true, simMode, simBearing, startTime, routePoints, isRouteMode,\n            SpooferProvider.wifiJson, appCoordinateSystems, SpooferProvider.cellJson,\n            SpooferProvider.bluetoothJson, mockWifi, mockCell, mockBluetooth, enableJitter,\n            alt, satCount, enableCatchLog\n        )\n        rootManager.grantMockLocation()\n\n        context.startForegroundService(\n            Intent(context, SpoofingService::class.java).apply {\n                action = SpoofingService.ACTION_START\n                putExtra(SpoofingService.EXTRA_LAT, lat)\n                putExtra(SpoofingService.EXTRA_LNG, lng)\n            }\n        )\n    }\n\n    suspend fun stopSpoofing(context: Context) {\n        SpooferProvider.isActive = false\n        SpooferProvider.wifiJson = "[]"\n        SpooferProvider.cellJson = "[]"\n        SpooferProvider.bluetoothJson = "[]"\n        SpooferProvider.routeJson = "[]"\n        SpooferProvider.isRouteMode = false\n        configManager.saveConfig(0.0, 0.0, false, enableCatchLog = settingsManager.enableCatchLog)\n        context.startService(Intent(context, SpoofingService::class.java).apply {\n            action = SpoofingService.ACTION_STOP\n        })\n        rootManager.revokeMockLocation()\n    }\n\n    suspend fun updateConfig(\n        lat: Double,\n        lng: Double,\n        simMode: String,\n        simBearing: Float,\n        startTime: Long,\n        routePoints: List<RoutePoint>,\n        isRouteMode: Boolean,\n        appCoordinateSystems: Map<String, String>,\n        wifiJson: String = SpooferProvider.wifiJson,\n        cellJson: String = SpooferProvider.cellJson,\n        bluetoothJson: String = SpooferProvider.bluetoothJson,\n        mockWifi: Boolean = true,\n        mockCell: Boolean = true,\n        mockBluetooth: Boolean = true,\n        enableJitter: Boolean = true,\n        enableCatchLog: Boolean = settingsManager.enableCatchLog\n    ) {\n        SpooferProvider.latitude = lat\n        SpooferProvider.longitude = lng\n        SpooferProvider.startTimestamp = startTime\n        SpooferProvider.simMode = simMode\n        SpooferProvider.simBearing = simBearing\n        SpooferProvider.routeJson = routePointsToJson(routePoints)\n        SpooferProvider.isRouteMode = isRouteMode\n        SpooferProvider.wifiJson = wifiJson\n        SpooferProvider.cellJson = cellJson\n        SpooferProvider.bluetoothJson = bluetoothJson\n        SpooferProvider.enableJitter = enableJitter\n        SpooferProvider.enableCatchLog = enableCatchLog\n        val alt = settingsManager.altitude.toDoubleOrNull() ?: 0.0\n        val satCount = settingsManager.satelliteCount.toIntOrNull() ?: 20\n        configManager.saveConfig(\n            lat, lng, true, simMode, simBearing, startTime, routePoints, isRouteMode,\n            SpooferProvider.wifiJson, appCoordinateSystems, SpooferProvider.cellJson,\n            SpooferProvider.bluetoothJson, mockWifi, mockCell, mockBluetooth, enableJitter,\n            alt, satCount, enableCatchLog\n        )\n    }\n\n    suspend fun updateWifiJson(wifiJson: String, appCoordinateSystems: Map<String, String>) {\n        SpooferProvider.wifiJson = wifiJson\n        configManager.saveConfig(\n            SpooferProvider.latitude,\n            SpooferProvider.longitude,\n            SpooferProvider.isActive,\n            SpooferProvider.simMode,\n            SpooferProvider.simBearing,\n            startTimestamp = SpooferProvider.startTimestamp,\n            wifiJson = wifiJson,\n            appCoordinateSystems = appCoordinateSystems,\n            cellJson = SpooferProvider.cellJson,\n            bluetoothJson = SpooferProvider.bluetoothJson,\n            altitude = settingsManager.altitude.toDoubleOrNull() ?: 0.0,\n            satelliteCount = settingsManager.satelliteCount.toIntOrNull() ?: 20,\n            enableCatchLog = settingsManager.enableCatchLog\n        )\n    }\n\n    private fun routePointsToJson(points: List<RoutePoint>): String {\n        val arr = JSONArray()\n        points.forEach { p ->\n            arr.put(JSONObject().apply {\n                put("lat", p.lat)\n                put("lng", p.lng)\n            })\n        }\n        return arr.toString()\n    }\n\n    fun getSavedRoutes(): kotlinx.coroutines.flow.Flow<List<com.suseoaa.locationspoofer.data.db.SavedRouteEntity>> {\n        return savedRouteDao.getAllSavedRoutes()\n    }\n\n    suspend fun insertSavedRoute(name: String, points: List<RoutePoint>) {\n        val pointsJson = routePointsToJson(points)\n        savedRouteDao.insertSavedRoute(\n            com.suseoaa.locationspoofer.data.db.SavedRouteEntity(\n                name = name,\n                pointsJson = pointsJson\n            )\n        )\n    }\n\n    suspend fun deleteSavedRoute(route: com.suseoaa.locationspoofer.data.db.SavedRouteEntity) {\n        savedRouteDao.deleteSavedRoute(route)\n    }\n}\n')
+
+          write_file('app/src/main/java/com/suseoaa/locationspoofer/data/model/AppUiState.kt', 'package com.suseoaa.locationspoofer.data.model\n\nimport androidx.annotation.StringRes\nimport com.suseoaa.locationspoofer.R\n\nenum class WifiLoadStatus { IDLE, LOADING, DONE }\n\nenum class SimMode(@StringRes val labelResId: Int, val speedMs: Double) {\n    STILL(R.string.still, 0.0),\n    WALKING(R.string.walking, 1.4),\n    RUNNING(R.string.running, 3.0),\n    CYCLING(R.string.cycling, 5.5),\n    EBIKE(R.string.ebike, 8.333),\n    DRIVING(R.string.driving, 15.0),\n    CUSTOM(R.string.custom, 0.0)\n}\n\nenum class SearchMode {\n    NETWORK,\n    LOCAL\n}\n\n/** 路线规划阶段 */\nenum class RoutePlanStage {\n    /** 未开始，默认状态 */\n    IDLE,\n    /** 正在点击地图添加路点 */\n    SELECTING,\n    /** 已结束选点，等待配置并启动 */\n    READY,\n    /** 路线模拟运行中 */\n    RUNNING\n}\n\n/** 路线运行模式 */\nenum class RouteRunMode {\n    /** 手动模式：摇杆控制移动方向和速度 */\n    MANUAL,\n    /** 循环模式：按路线自动来回移动 */\n    LOOP\n}\n\nenum class AppMapType {\n    NORMAL,\n    SATELLITE,\n    MAP_3D\n}\n\ndata class AppState(\n    val mapType: AppMapType = AppMapType.NORMAL,\n    val mapEngine: MapEngine = MapEngine.AUTO,\n    val isInitializing: Boolean = true,\n    val isLanguageSet: Boolean = true, // Default to true to avoid flicker if not needed\n    val currentLanguage: String = "",\n    val hasRootAccess: Boolean = false,\n    val isLSPosedActive: Boolean = false,\n    val longitudeInput: String = "",\n    val latitudeInput: String = "",\n    val showCoordinateError: Boolean = false,\n    val isSavingConfig: Boolean = false,\n    val isSpoofingActive: Boolean = false,\n    val wifiLoadStatus: WifiLoadStatus = WifiLoadStatus.IDLE,\n    val wifiApCount: Int = 0,\n    val savedLocations: List<SavedLocation> = emptyList(),\n    val searchKeyword: String = "",\n    val searchMode: SearchMode = SearchMode.NETWORK,\n    val searchResults: List<SavedLocation> = emptyList(),\n    val simBearing: Float = 0f,\n    val savedRoutes: List<SavedRoute> = emptyList(),\n    // 路线规划\n    val routePoints: List<RoutePoint> = emptyList(),\n    val routePlanStage: RoutePlanStage = RoutePlanStage.IDLE,\n    /** 路线运行模式（手动 / 循环） */\n    val routeRunMode: RouteRunMode = RouteRunMode.MANUAL,\n    /** 循环模式使用的速度 */\n    val routeSimMode: SimMode = SimMode.WALKING,\n    /** 自定义速度 (m/s)，仅当 routeSimMode == CUSTOM 时使用 */\n    val customSpeedMs: Double = 1.5,\n    /** 首页地图已确认的选点（点击地图后出现确认按钮，确认后填充坐标） */\n    val mapConfirmedPoint: Pair<Double, Double>? = null,\n    val amapApiKey: String = "",\n    val baiduApiKey: String = "",\n    val googleApiKey: String = "",\n    val appSha1: String = "",\n    val appCoordinateSystems: Map<String, String> = mapOf("com.logistics.rider.hungerstation" to "WGS-84"),\n    val isContinuousScanning: Boolean = false,\n    val environmentRecordCount: Int = 0,\n    val hookedApps: List<AppInfoItem> = emptyList(),\n    // 采集到的本地环境数据\n    val collectedWifiJson: String = "[]",\n    val collectedCellJson: String = "[]",\n    val collectedBluetoothJson: String = "[]",\n    // 模拟开关\n    val mockWifi: Boolean = true,\n    val mockCell: Boolean = true,\n    val mockBluetooth: Boolean = true,\n    val enableJitter: Boolean = true,\n    val altitudeInput: String = "0.0",\n    val satelliteCountInput: String = "20",\n    val canMockWifi: Boolean = false,\n    val canMockCell: Boolean = false,\n    val canMockBluetooth: Boolean = false,\n    \n    // Data Management\n    val isManageDataScreen: Boolean = false,\n    val manageDataList: List<com.suseoaa.locationspoofer.data.db.CompleteLocation> = emptyList(),\n    val manageDataIsLoading: Boolean = false,\n\n    // Catch Log (سجل الصيد) - خاص بحزمة com.logistics.rider.hungerstation فقط\n    val isCatchLogScreen: Boolean = false,\n    val enableCatchLog: Boolean = true,\n    val catchLogAutoRefresh: Boolean = true,\n    val catchLogs: List<CatchLogEntry> = emptyList(),\n    val catchLogIsLoading: Boolean = false,\n    val selectedCatchLogCategory: CatchLogCategory = CatchLogCategory.ALL,\n    val targetPackageOnly: String = "com.logistics.rider.hungerstation"\n)\n\ndata class AppInfoItem(\n    val packageName: String,\n    val appName: String,\n    val isSystem: Boolean\n)\n')
+
+          write_file('app/src/main/java/com/suseoaa/locationspoofer/MainActivity.kt', 'package com.suseoaa.locationspoofer\n\nimport android.Manifest\nimport android.content.Context\nimport android.content.pm.PackageManager\nimport android.os.Build\nimport android.os.Bundle\nimport androidx.activity.ComponentActivity\nimport androidx.activity.compose.BackHandler\nimport androidx.activity.compose.setContent\nimport androidx.activity.compose.LocalActivityResultRegistryOwner\nimport androidx.activity.enableEdgeToEdge\nimport androidx.compose.animation.*\nimport androidx.compose.animation.core.tween\nimport androidx.compose.foundation.isSystemInDarkTheme\nimport androidx.compose.foundation.layout.fillMaxSize\nimport androidx.compose.material.icons.Icons\nimport androidx.compose.material.icons.rounded.Extension\nimport androidx.compose.material.icons.rounded.Lock\nimport androidx.compose.material3.MaterialTheme\nimport androidx.compose.material3.Surface\nimport androidx.compose.runtime.*\nimport androidx.compose.ui.Modifier\nimport androidx.compose.ui.platform.LocalConfiguration\nimport androidx.compose.ui.platform.LocalContext\nimport androidx.compose.ui.res.stringResource\nimport com.suseoaa.locationspoofer.ui.screen.BlockingScreen\nimport com.suseoaa.locationspoofer.ui.screen.CatchLogScreen\nimport com.suseoaa.locationspoofer.ui.screen.FullScreenMapPage\nimport com.suseoaa.locationspoofer.ui.screen.InitializingScreen\nimport com.suseoaa.locationspoofer.ui.screen.SpoofingScreen\nimport com.suseoaa.locationspoofer.ui.screen.LanguageSelectionScreen\nimport com.suseoaa.locationspoofer.ui.theme.AppColorSchemeDark\nimport com.suseoaa.locationspoofer.ui.theme.AppColorSchemeLight\nimport com.suseoaa.locationspoofer.utils.LocaleUtils\nimport com.suseoaa.locationspoofer.viewmodel.MainViewModel\nimport org.koin.androidx.viewmodel.ext.android.viewModel\n\nclass MainActivity : ComponentActivity() {\n    private val viewModel: MainViewModel by viewModel()\n\n    override fun attachBaseContext(newBase: Context) {\n        val prefs = newBase.getSharedPreferences("app_settings", Context.MODE_PRIVATE)\n        val isLangSet = prefs.getBoolean("is_language_set", false)\n        val lang = if (isLangSet) prefs.getString("language", "") ?: "" else ""\n        \n        val context = if (lang.isNotEmpty()) {\n            LocaleUtils.wrap(newBase, lang)\n        } else {\n            newBase\n        }\n        super.attachBaseContext(context)\n    }\n\n    override fun onCreate(savedInstanceState: Bundle?) {\n        enableEdgeToEdge()\n        super.onCreate(savedInstanceState)\n\n        val savedLang = viewModel.getSavedLanguage()\n        val currentLocales = androidx.appcompat.app.AppCompatDelegate.getApplicationLocales()\n        if (savedLang.isNotEmpty() && (currentLocales.isEmpty || currentLocales.toLanguageTags() != savedLang)) {\n            androidx.appcompat.app.AppCompatDelegate.setApplicationLocales(\n                androidx.core.os.LocaleListCompat.forLanguageTags(savedLang)\n            )\n        }\n\n        checkAndRequestPermissions()\n\n        setContent {\n            CompositionLocalProvider(\n                LocalActivityResultRegistryOwner provides this@MainActivity\n            ) {\n                val uiState by viewModel.uiState.collectAsState()\n                val isDark = isSystemInDarkTheme()\n                val colorScheme = if (isDark) AppColorSchemeDark else AppColorSchemeLight\n\n                val context = LocalContext.current\n                val wrappedContext = remember(uiState.currentLanguage) {\n                    if (uiState.currentLanguage.isNotEmpty()) {\n                        LocaleUtils.wrap(context, uiState.currentLanguage)\n                    } else {\n                        context\n                    }\n                }\n                val configuration = wrappedContext.resources.configuration\n\n                CompositionLocalProvider(\n                    LocalContext provides wrappedContext,\n                    LocalConfiguration provides configuration\n                ) {\n                    MaterialTheme(colorScheme = colorScheme) {\n                        Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {\n                            MainScreen(viewModel = viewModel, uiState = uiState, isDark = isDark, isInPipMode = pipModeState)\n                        }\n                    }\n                }\n            }\n        }\n    }\n\n    private var pipModeState by mutableStateOf(false)\n\n    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: android.content.res.Configuration) {\n        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)\n        pipModeState = isInPictureInPictureMode\n    }\n\n    private fun checkAndRequestPermissions() {\n        val permissions = mutableListOf(\n            Manifest.permission.ACCESS_FINE_LOCATION,\n            Manifest.permission.ACCESS_COARSE_LOCATION,\n            Manifest.permission.READ_PHONE_STATE\n        )\n\n        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {\n            permissions.add(Manifest.permission.BLUETOOTH_SCAN)\n            permissions.add(Manifest.permission.BLUETOOTH_CONNECT)\n        }\n\n        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {\n            permissions.add(Manifest.permission.POST_NOTIFICATIONS)\n        }\n\n        val notGranted = permissions.filter {\n            checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED\n        }\n\n        if (notGranted.isNotEmpty()) {\n            requestPermissions(notGranted.toTypedArray(), 100)\n        } else {\n            checkBackgroundLocation()\n        }\n    }\n\n    private fun checkBackgroundLocation() {\n        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {\n            if (checkSelfPermission(Manifest.permission.ACCESS_BACKGROUND_LOCATION) != PackageManager.PERMISSION_GRANTED) {\n                requestPermissions(arrayOf(Manifest.permission.ACCESS_BACKGROUND_LOCATION), 101)\n            }\n        }\n    }\n\n    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {\n        super.onRequestPermissionsResult(requestCode, permissions, grantResults)\n        if (requestCode == 100) {\n            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {\n                checkBackgroundLocation()\n            }\n        }\n    }\n\n    override fun onUserLeaveHint() {\n        super.onUserLeaveHint()\n        if (viewModel.uiState.value.isSpoofingActive) {\n            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {\n                val params = android.app.PictureInPictureParams.Builder().build()\n                enterPictureInPictureMode(params)\n            }\n        }\n    }\n}\n\nprivate data class MainNavState(\n    val fullScreen: Boolean,\n    val scanner: Boolean,\n    val manage: Boolean,\n    val catchLog: Boolean,\n    val settings: Boolean\n)\n\n@Composable\nfun MainScreen(\n    viewModel: MainViewModel,\n    uiState: com.suseoaa.locationspoofer.data.model.AppState,\n    isDark: Boolean,\n    isInPipMode: Boolean\n) {\n    var isFullScreenMap by remember { mutableStateOf(false) }\n    var isScannerMap by remember { mutableStateOf(false) }\n    var isSettingsScreen by remember { mutableStateOf(false) }\n\n    val closeMapAndResetRouteIfNeeded = {\n        if (uiState.routePlanStage == com.suseoaa.locationspoofer.data.model.RoutePlanStage.SELECTING ||\n            uiState.routePlanStage == com.suseoaa.locationspoofer.data.model.RoutePlanStage.READY) {\n            viewModel.cancelRoutePlanning()\n        }\n        isFullScreenMap = false\n    }\n\n    BackHandler(enabled = isFullScreenMap || isScannerMap || uiState.isManageDataScreen || uiState.isCatchLogScreen || isSettingsScreen) {\n        if (uiState.isCatchLogScreen) {\n            viewModel.toggleCatchLogScreen(false)\n        } else if (uiState.isManageDataScreen) {\n            viewModel.toggleManageDataScreen(false)\n        } else if (isSettingsScreen) {\n            isSettingsScreen = false\n        } else if (isScannerMap) {\n            isScannerMap = false\n        } else {\n            closeMapAndResetRouteIfNeeded()\n        }\n    }\n\n    AnimatedContent(\n        targetState = MainNavState(\n            fullScreen = isFullScreenMap || isInPipMode,\n            scanner = isScannerMap && !isInPipMode,\n            manage = uiState.isManageDataScreen && !isInPipMode,\n            catchLog = uiState.isCatchLogScreen && !isInPipMode,\n            settings = isSettingsScreen && !isInPipMode\n        ),\n        transitionSpec = {\n            slideInVertically(tween(400)) { it } togetherWith slideOutVertically(tween(400)) { -it }\n        },\n        label = "fullscreen_transition"\n    ) { navState ->\n        if (navState.fullScreen) {\n            FullScreenMapPage(\n                viewModel = viewModel,\n                uiState = uiState,\n                isDark = isDark,\n                isInPipMode = isInPipMode,\n                onClose = { closeMapAndResetRouteIfNeeded() }\n            )\n        } else if (navState.catchLog) {\n            CatchLogScreen(\n                viewModel = viewModel,\n                uiState = uiState,\n                isDark = isDark,\n                onClose = { viewModel.toggleCatchLogScreen(false) }\n            )\n        } else if (navState.scanner) {\n            com.suseoaa.locationspoofer.ui.screen.ScannerMapScreen(\n                viewModel = viewModel,\n                uiState = uiState,\n                isDark = isDark,\n                onClose = { isScannerMap = false }\n            )\n        } else if (navState.manage) {\n            com.suseoaa.locationspoofer.ui.screen.ManageDataScreen(\n                viewModel = viewModel,\n                uiState = uiState,\n                isDark = isDark,\n                onClose = { viewModel.toggleManageDataScreen(false) }\n            )\n        } else if (navState.settings) {\n            com.suseoaa.locationspoofer.ui.screen.SettingsScreen(\n                viewModel = viewModel,\n                uiState = uiState,\n                onClose = { isSettingsScreen = false }\n            )\n        } else {\n            when {\n                uiState.isInitializing -> InitializingScreen(isDark)\n                !uiState.isLanguageSet -> LanguageSelectionScreen(viewModel)\n                !uiState.hasRootAccess -> BlockingScreen(\n                    icon = Icons.Rounded.Lock,\n                    title = stringResource(R.string.root_required),\n                    message = stringResource(R.string.root_message),\n                    isDark = isDark\n                )\n                !uiState.isLSPosedActive -> BlockingScreen(\n                    icon = Icons.Rounded.Extension,\n                    title = stringResource(R.string.lsposed_not_active),\n                    message = stringResource(R.string.lsposed_message),\n                    isDark = isDark\n                )\n                else -> SpoofingScreen(\n                    viewModel = viewModel,\n                    uiState = uiState,\n                    isDark = isDark,\n                    onExpandMap = { isFullScreenMap = true },\n                    onExpandScannerMap = { isScannerMap = true },\n                    onExpandSettings = { isSettingsScreen = true }\n                )\n            }\n        }\n    }\n}\n')
+
+          # Patch LocationHooker.kt (idempotent)
+          path = pathlib.Path('app/src/main/java/com/suseoaa/locationspoofer/xposed/LocationHooker.kt')
+          text = path.read_text(encoding='utf-8')
+          if 'TARGET_PACKAGE = "com.logistics.rider.hungerstation"' not in text:
+              
+              
+              # 1. Update companion object & handleLoadPackage to restrict to com.logistics.rider.hungerstation and add CatchLog engine
+              old_block = """    companion object {
+              
+                      // 系统进程同样需要覆盖（android进程持有LocationManagerService）
+                      val SYSTEM_PACKAGES = setOf("android", "system", "com.android.phone")
+                  }
+              
+                  fun handleLoadPackage(pkg: String, classLoader: ClassLoader) {
+                      
+              
+                      // 宿主App自报平安
+                      if (pkg == "com.suseoaa.locationspoofer") {
+                          return // 宿主App不需要注入定位Hook
+                      }
+              
+                      // 系统进程：允许执行所有的环境数据Hook，实现系统原生界面的完美覆盖
+                      // if (SYSTEM_PACKAGES.contains(pkg)) {
+                      //     hookLocationAPIs(classLoader, pkg)
+                      //     return
+                      // }
+              
+              
+                      XposedBridge.log("[LocationSpoofer] Hooking package: $pkg")
+              
+                      // ★ 反检测: 必须在其他Hook之前安装,隐藏Xposed环境
+                      hookAntiDetection(classLoader)
+              
+                      hookLocationAPIs(classLoader, pkg)
+                      hookWifiEnvironment(classLoader)
+                      hookCellEnvironment(classLoader)
+                      hookConnectivityLayer(classLoader)
+                      hookBluetoothLE(classLoader)
+                      hookGnssStatus(classLoader)
+                  }"""
+              
+              new_block = """    companion object {
+                      const val TARGET_PACKAGE = "com.logistics.rider.hungerstation"
+                      const val CATCH_LOG_FILE = "/data/local/tmp/locationspoofer_catch_log.jsonl"
+                      val SYSTEM_PACKAGES = setOf("android", "system", "com.android.phone")
+                  }
+              
+                  private val catchLogLastTime = ConcurrentHashMap<String, Long>()
+                  private val catchLogHitCounts = ConcurrentHashMap<String, Int>()
+                  private val catchLogQueue = java.util.concurrent.LinkedBlockingQueue<String>(1000)
+                  @Volatile
+                  private var isCatchLogWorkerStarted = false
+                  private val catchLogLock = Any()
+              
+                  private fun startCatchLogWorkerIfNeeded() {
+                      if (!isCatchLogWorkerStarted) {
+                          synchronized(catchLogLock) {
+                              if (!isCatchLogWorkerStarted) {
+                                  isCatchLogWorkerStarted = true
+                                  Thread {
+                                      while (true) {
+                                          try {
+                                              val line = catchLogQueue.take()
+                                              val file = File(CATCH_LOG_FILE)
+                                              if (file.exists() && file.canWrite()) {
+                                                  file.appendText(line + "\\n")
+                                              } else {
+                                                  try {
+                                                      file.writeText(line + "\\n")
+                                                  } catch (_: Throwable) {}
+                                              }
+                                          } catch (_: Throwable) {}
+                                      }
+                                  }.apply {
+                                      isDaemon = true
+                                      name = "HS_CatchLogWriter"
+                                      start()
+                                  }
+                              }
+                          }
+                      }
+                  }
+              
+                  private fun recordCatchLog(
+                      category: String,
+                      title: String,
+                      detail: String,
+                      lat: Double? = null,
+                      lng: Double? = null,
+                      throttleKey: String? = null,
+                      throttleMs: Long = 3000L
+                  ) {
+                      try {
+                          val cfg = lastConfig
+                          if (cfg != null && !cfg.optBoolean("enable_catch_log", true)) return
+              
+                          val now = System.currentTimeMillis()
+                          var hits = 1
+                          if (throttleKey != null) {
+                              val totalHits = (catchLogHitCounts[throttleKey] ?: 0) + 1
+                              catchLogHitCounts[throttleKey] = totalHits
+                              val last = catchLogLastTime[throttleKey] ?: 0L
+                              if (now - last < throttleMs) {
+                                  return
+                              }
+                              catchLogLastTime[throttleKey] = now
+                              hits = totalHits
+                          }
+              
+                          startCatchLogWorkerIfNeeded()
+              
+                          val uniqueId = now * 1000L + (rng.nextInt(900) + 100)
+                          val json = JSONObject().apply {
+                              put("id", uniqueId)
+                              put("timestamp", now)
+                              put("packageName", TARGET_PACKAGE)
+                              put("category", category)
+                              put("title", title)
+                              put("detail", detail)
+                              if (lat != null && !lat.isNaN()) put("lat", lat)
+                              if (lng != null && !lng.isNaN()) put("lng", lng)
+                              put("hitCount", hits)
+                          }
+                          val jsonStr = json.toString()
+                          android.util.Log.i("HS_CatchLog", jsonStr)
+                          catchLogQueue.offer(jsonStr)
+                      } catch (_: Throwable) {}
+                  }
+              
+                  fun handleLoadPackage(pkg: String, classLoader: ClassLoader) {
+                      if (pkg == "com.suseoaa.locationspoofer") {
+                          return
+                      }
+              
+                      // حصر العمل مع حزمة com.logistics.rider.hungerstation فقط
+                      val basePkg = pkg.substringBefore(":")
+                      if (basePkg != TARGET_PACKAGE) {
+                          return
+                      }
+              
+                      XposedBridge.log("[LocationSpoofer] Hooking HungerStation package only: $pkg")
+                      recordCatchLog(
+                          category = "SYSTEM",
+                          title = "تفعيل الصيد والحقن - هنقرستيشن",
+                          detail = "تم ربط وحدة الصيد وتزييف الموقع بحزمة $pkg بنجاح",
+                          throttleKey = "init_$pkg",
+                          throttleMs = 5000L
+                      )
+              
+                      // ★ 反检测: 必须在其他Hook之前安装,隐藏Xposed环境
+                      hookAntiDetection(classLoader)
+              
+                      hookLocationAPIs(classLoader, pkg)
+                      hookOrderAndNetworkCatch(classLoader, pkg)
+                      hookWifiEnvironment(classLoader)
+                      hookCellEnvironment(classLoader)
+                      hookConnectivityLayer(classLoader)
+                      hookBluetoothLE(classLoader)
+                      hookGnssStatus(classLoader)
+                  }"""
+              
+              assert old_block in text, "old_block not found"
+              text = text.replace(old_block, new_block, 1)
+              
+              # 2. Add logging in hookAntiDetection
+              old_stack_1 = """                        if (filtered.size != stackTrace.size) {
+                                          param.result = filtered
+                                      }"""
+              new_stack_1 = """                        if (filtered.size != stackTrace.size) {
+                                          param.result = filtered
+                                          recordCatchLog(
+                                              category = "SECURITY",
+                                              title = "اعتراض فحص StackTrace",
+                                              detail = "تم إخفاء إطارات Xposed/LSPosed من فحص الحماية في هنقرستيشن",
+                                              throttleKey = "sec_stacktrace",
+                                              throttleMs = 10000L
+                                          )
+                                      }"""
+              assert old_stack_1 in text, "old_stack_1 not found"
+              text = text.replace(old_stack_1, new_stack_1, 1)
+              
+              old_appops = """                    if (isMockOp) {
+                                      // MODE_IGNORED = 1, MODE_ERRORED = 2
+                                      param.result = 1 // MODE_IGNORED，让对方以为我们没有被授权模拟位置
+                                  }"""
+              new_appops = """                    if (isMockOp) {
+                                      // MODE_IGNORED = 1, MODE_ERRORED = 2
+                                      param.result = 1 // MODE_IGNORED，让对方以为我们没有被授权模拟位置
+                                      recordCatchLog(
+                                          category = "SECURITY",
+                                          title = "اعتراض فحص AppOps Mock",
+                                          detail = "حاول التطبيق فحص صلاحية OP_MOCK_LOCATION وتم إرجاع MODE_IGNORED",
+                                          throttleKey = "sec_appops_mock",
+                                          throttleMs = 8000L
+                                      )
+                                  }"""
+              assert old_appops in text, "old_appops not found"
+              text = text.replace(old_appops, new_appops, 1)
+              
+              # 3. Update default coordinate system in hookLocationAPIs to WGS-84 for com.logistics.rider.hungerstation and log location catches
+              old_lat_hook = """                        val targetSys = if (appSystems?.has(basePkg) == true) {
+                                          appSystems.optString(basePkg, "GCJ-02")
+                                      } else {
+                                          "GCJ-02"
+                                      }
+                                      val baseLat = when (targetSys) {
+                                          "WGS-84" -> config.optDouble("wgs84_lat", param.result as Double)
+                                          "BD-09" -> config.optDouble("bd09_lat", param.result as Double)
+                                          else -> config.optDouble("lat", param.result as Double)
+                                      }
+                                      val baseLng = when (targetSys) {
+                                          "WGS-84" -> config.optDouble("wgs84_lng", 0.0)
+                                          "BD-09" -> config.optDouble("bd09_lng", 0.0)
+                                          else -> config.optDouble("lng", 0.0)
+                                      }
+                                      param.result = getJitteredLocation(baseLat, baseLng).first"""
+              
+              new_lat_hook = """                        val targetSys = if (appSystems?.has(basePkg) == true) {
+                                          appSystems.optString(basePkg, "WGS-84")
+                                      } else {
+                                          "WGS-84"
+                                      }
+                                      val baseLat = when (targetSys) {
+                                          "WGS-84" -> config.optDouble("wgs84_lat", param.result as Double)
+                                          "BD-09" -> config.optDouble("bd09_lat", param.result as Double)
+                                          else -> config.optDouble("lat", param.result as Double)
+                                      }
+                                      val baseLng = when (targetSys) {
+                                          "WGS-84" -> config.optDouble("wgs84_lng", 0.0)
+                                          "BD-09" -> config.optDouble("bd09_lng", 0.0)
+                                          else -> config.optDouble("lng", 0.0)
+                                      }
+                                      val jittered = getJitteredLocation(baseLat, baseLng)
+                                      param.result = jittered.first
+                                      recordCatchLog(
+                                          category = "LOCATION",
+                                          title = "صيد طلب إحداثيات GPS ($targetSys)",
+                                          detail = "تم تزويد هنقرستيشن بالإحداثيات المزيفة: (${String.format(java.util.Locale.US, "%.6f", jittered.first)}, ${String.format(java.util.Locale.US, "%.6f", jittered.second)})",
+                                          lat = jittered.first,
+                                          lng = jittered.second,
+                                          throttleKey = "loc_get_lat_lng",
+                                          throttleMs = 4000L
+                                      )"""
+              
+              assert old_lat_hook in text, "old_lat_hook not found"
+              text = text.replace(old_lat_hook, new_lat_hook, 1)
+              
+              old_lng_hook = """                        val targetSys = if (appSystems?.has(basePkg) == true) {
+                                          appSystems.optString(basePkg, "GCJ-02")
+                                      } else {
+                                          "GCJ-02"
+                                      }"""
+              new_lng_hook = """                        val targetSys = if (appSystems?.has(basePkg) == true) {
+                                          appSystems.optString(basePkg, "WGS-84")
+                                      } else {
+                                          "WGS-84"
+                                      }"""
+              assert old_lng_hook in text, "old_lng_hook not found"
+              text = text.replace(old_lng_hook, new_lng_hook, 1)
+              
+              old_antimock = """            val antiMockHook = object : XC_MethodHook() {
+                              override fun afterHookedMethod(param: MethodHookParam) {
+                                  val config = readConfig()
+                                  if (config != null && config.optBoolean("active", false)) {
+                                      param.result = false
+                                  }
+                              }
+                          }"""
+              new_antimock = """            val antiMockHook = object : XC_MethodHook() {
+                              override fun afterHookedMethod(param: MethodHookParam) {
+                                  val config = readConfig()
+                                  if (config != null && config.optBoolean("active", false)) {
+                                      param.result = false
+                                      recordCatchLog(
+                                          category = "SECURITY",
+                                          title = "تخطي فحص الموقع الوهمي (${param.method?.name ?: "isMock"})",
+                                          detail = "طلب هنقرستيشن التحقق من isMock/isFromMockProvider وتم إرجاع false",
+                                          lat = config.optDouble("wgs84_lat", config.optDouble("lat", 0.0)),
+                                          lng = config.optDouble("wgs84_lng", config.optDouble("lng", 0.0)),
+                                          throttleKey = "sec_is_mock",
+                                          throttleMs = 6000L
+                                      )
+                                  }
+                              }
+                          }"""
+              assert old_antimock in text, "old_antimock not found"
+              text = text.replace(old_antimock, new_antimock, 1)
+              
+              # 4. Add hookOrderAndNetworkCatch method right after hookLocationAPIs call or before hookTencentSDK
+              old_tencent_call = """        // ── 第三方地图SDK深度Hook(腾讯/百度) ──
+                      hookTencentSDK(classLoader)
+                      hookBaiduSDK(classLoader)
+                  }"""
+              
+              new_tencent_call = """        // ── 第三方地图SDK深度Hook(腾讯/百度) ──
+                      hookTencentSDK(classLoader)
+                      hookBaiduSDK(classLoader)
+                  }
+              
+                  /**
+                   * سجل الصيد الخاص بطلبات وشبكة وإشعارات وموقع تطبيق هنقرستيشن (com.logistics.rider.hungerstation)
+                   */
+                  private fun hookOrderAndNetworkCatch(classLoader: ClassLoader, currentPkg: String) {
+                      // 1. صيد طلبات LocationManager (getLastKnownLocation / requestLocationUpdates)
+                      try {
+                          val locMgrClass = XposedHelpers.findClass("android.location.LocationManager", classLoader)
+                          XposedBridge.hookAllMethods(locMgrClass, "getLastKnownLocation", object : XC_MethodHook() {
+                              override fun afterHookedMethod(param: MethodHookParam) {
+                                  val config = readConfig() ?: return
+                                  if (!config.optBoolean("active", false)) return
+                                  val provider = param.args.firstOrNull() as? String ?: "gps"
+                                  val lat = config.optDouble("wgs84_lat", config.optDouble("lat", 0.0))
+                                  val lng = config.optDouble("wgs84_lng", config.optDouble("lng", 0.0))
+                                  recordCatchLog(
+                                      category = "LOCATION",
+                                      title = "صيد getLastKnownLocation ($provider)",
+                                      detail = "طلب هنقرستيشن آخر موقع معروف عبر المزود: $provider",
+                                      lat = lat,
+                                      lng = lng,
+                                      throttleKey = "loc_last_known_$provider",
+                                      throttleMs = 5000L
+                                  )
+                              }
+                          })
+              
+                          XposedBridge.hookAllMethods(locMgrClass, "requestLocationUpdates", object : XC_MethodHook() {
+                              override fun beforeHookedMethod(param: MethodHookParam) {
+                                  val config = readConfig()
+                                  val lat = config?.optDouble("wgs84_lat", config.optDouble("lat", 0.0))
+                                  val lng = config?.optDouble("wgs84_lng", config.optDouble("lng", 0.0))
+                                  val firstArg = param.args.firstOrNull()?.toString() ?: "gps"
+                                  recordCatchLog(
+                                      category = "LOCATION",
+                                      title = "صيد اشتراك تحديثات الموقع (requestLocationUpdates)",
+                                      detail = "سجل هنقرستيشن مستمعاً لتحديثات الموقع الحية ($firstArg)",
+                                      lat = lat,
+                                      lng = lng,
+                                      throttleKey = "loc_req_updates",
+                                      throttleMs = 8000L
+                                  )
+                              }
+                          })
+                      } catch (_: Throwable) {}
+              
+                      // 2. صيد Google Play Services FusedLocation (LocationResult) داخل حزمة هنقرستيشن
+                      try {
+                          val locResultClass = XposedHelpers.findClassIfExists("com.google.android.gms.location.LocationResult", classLoader)
+                          if (locResultClass != null) {
+                              XposedBridge.hookAllMethods(locResultClass, "getLastLocation", object : XC_MethodHook() {
+                                  override fun afterHookedMethod(param: MethodHookParam) {
+                                      val config = readConfig() ?: return
+                                      if (!config.optBoolean("active", false)) return
+                                      val lat = config.optDouble("wgs84_lat", config.optDouble("lat", 0.0))
+                                      val lng = config.optDouble("wgs84_lng", config.optDouble("lng", 0.0))
+                                      recordCatchLog(
+                                          category = "LOCATION",
+                                          title = "صيد FusedLocation (LocationResult)",
+                                          detail = "استلم هنقرستيشن تحديث موقع عبر خدمات Google Play",
+                                          lat = lat,
+                                          lng = lng,
+                                          throttleKey = "loc_fused_result",
+                                          throttleMs = 4000L
+                                      )
+                                  }
+                              })
+                          }
+                      } catch (_: Throwable) {}
+              
+                      // 3. صيد طلبات الشبكة والـ API الخاصة بالطلبات والتوصيل في هنقرستيشن (OkHttp3 & HttpURLConnection)
+                      try {
+                          val okHttpClientClass = XposedHelpers.findClassIfExists("okhttp3.OkHttpClient", classLoader)
+                          if (okHttpClientClass != null) {
+                              XposedBridge.hookAllMethods(okHttpClientClass, "newCall", object : XC_MethodHook() {
+                                  override fun beforeHookedMethod(param: MethodHookParam) {
+                                      try {
+                                          val req = param.args.firstOrNull() ?: return
+                                          val urlObj = try { XposedHelpers.callMethod(req, "url") } catch (_: Throwable) { null }
+                                          val urlStr = urlObj?.toString() ?: return
+                                          val methodStr = try { XposedHelpers.callMethod(req, "method") as? String } catch (_: Throwable) { "HTTP" } ?: "HTTP"
+              
+                                          val lowerUrl = urlStr.lowercase()
+                                          val isOrderRelated = lowerUrl.contains("order") ||
+                                              lowerUrl.contains("dispatch") ||
+                                              lowerUrl.contains("offer") ||
+                                              lowerUrl.contains("delivery") ||
+                                              lowerUrl.contains("assign") ||
+                                              lowerUrl.contains("task") ||
+                                              lowerUrl.contains("job") ||
+                                              lowerUrl.contains("shift") ||
+                                              lowerUrl.contains("rider") ||
+                                              lowerUrl.contains("location") ||
+                                              lowerUrl.contains("ping") ||
+                                              lowerUrl.contains("hungerstation") ||
+                                              lowerUrl.contains("logistics")
+              
+                                          if (isOrderRelated) {
+                                              val config = readConfig()
+                                              val lat = config?.optDouble("wgs84_lat", config.optDouble("lat", 0.0))
+                                              val lng = config?.optDouble("wgs84_lng", config.optDouble("lng", 0.0))
+                                              val shortPath = try {
+                                                  val u = java.net.URI(urlStr)
+                                                  (u.host ?: "") + (u.path ?: urlStr)
+                                              } catch (_: Throwable) { urlStr.take(120) }
+              
+                                              val title = when {
+                                                  lowerUrl.contains("order") || lowerUrl.contains("offer") || lowerUrl.contains("dispatch") || lowerUrl.contains("assign") ->
+                                                      "صيد طلب/إرسالية ($methodStr)"
+                                                  lowerUrl.contains("location") || lowerUrl.contains("ping") ->
+                                                      "صيد إرسال موقع للسيرفر ($methodStr)"
+                                                  else ->
+                                                      "صيد اتصال سيرفر هنقرستيشن ($methodStr)"
+                                              }
+                                              recordCatchLog(
+                                                  category = "ORDER",
+                                                  title = title,
+                                                  detail = "الرابط: $shortPath",
+                                                  lat = lat,
+                                                  lng = lng,
+                                                  throttleKey = "net_${methodStr}_${shortPath.take(60)}",
+                                                  throttleMs = 2000L
+                                              )
+                                          }
+                                      } catch (_: Throwable) {}
+                                  }
+                              })
+                          }
+                      } catch (_: Throwable) {}
+              
+                      // 4. صيد الإشعارات الواردة داخل تطبيق هنقرستيشن (مثل إشعارات الطلبات الجديدة)
+                      try {
+                          val notifMgrClass = XposedHelpers.findClass("android.app.NotificationManager", classLoader)
+                          XposedBridge.hookAllMethods(notifMgrClass, "notify", object : XC_MethodHook() {
+                              override fun beforeHookedMethod(param: MethodHookParam) {
+                                  try {
+                                      val notif = param.args.firstOrNull { it is android.app.Notification } as? android.app.Notification ?: return
+                                      val extras = notif.extras ?: return
+                                      val title = extras.getCharSequence(android.app.Notification.EXTRA_TITLE)?.toString() ?: ""
+                                      val text = extras.getCharSequence(android.app.Notification.EXTRA_TEXT)?.toString() ?: ""
+                                      if (title.isNotBlank() || text.isNotBlank()) {
+                                          val config = readConfig()
+                                          val lat = config?.optDouble("wgs84_lat", config.optDouble("lat", 0.0))
+                                          val lng = config?.optDouble("wgs84_lng", config.optDouble("lng", 0.0))
+                                          recordCatchLog(
+                                              category = "ORDER",
+                                              title = "صيد إشعار هنقرستيشن: ${title.ifBlank { "إشعار جديد" }}",
+                                              detail = text.ifBlank { "تم التقاط إشعار صادر من حزمة هنقرستيشن" },
+                                              lat = lat,
+                                              lng = lng,
+                                              throttleKey = "notif_${title}_${text.take(30)}",
+                                              throttleMs = 2000L
+                                          )
+                                      }
+                                  } catch (_: Throwable) {}
+                              }
+                          })
+                      } catch (_: Throwable) {}
+                  }"""
+              
+              assert old_tencent_call in text, "old_tencent_call not found"
+              text = text.replace(old_tencent_call, new_tencent_call, 1)
+              
+              # 5. Also log Wi-Fi and Cell interceptions in hookWifiEnvironment and hookCellEnvironment
+              old_wifi_scan = """                param.result = fakeList
+                          }
+                      }"""
+              new_wifi_scan = """                param.result = fakeList
+                              recordCatchLog(
+                                  category = "ENV",
+                                  title = "صيد مسح شبكات Wi-Fi",
+                                  detail = "تم تزويد هنقرستيشن بـ ${fakeList.size} شبكة Wi-Fi محاكاة",
+                                  throttleKey = "env_wifi_scan",
+                                  throttleMs = 8000L
+                              )
+                          }
+                      }"""
+              assert old_wifi_scan in text, "old_wifi_scan not found"
+              text = text.replace(old_wifi_scan, new_wifi_scan, 1)
+              
+              old_cell_all = """                    "getAllCellInfo" -> {
+                                      try {
+                                          if (config.optBoolean("mock_cell", true)) {
+                                              param.result = buildFakeCellInfoList(classLoader, lat, lng, config)
+                                          } else {
+                                              param.result = java.util.ArrayList<Any>()
+                                          }"""
+              new_cell_all = """                    "getAllCellInfo" -> {
+                                      try {
+                                          if (config.optBoolean("mock_cell", true)) {
+                                              val cellList = buildFakeCellInfoList(classLoader, lat, lng, config)
+                                              param.result = cellList
+                                              recordCatchLog(
+                                                  category = "ENV",
+                                                  title = "صيد فحص أبراج الاتصال (CellInfo)",
+                                                  detail = "تم تزويد هنقرستيشن ببيانات ${cellList.size} برج اتصال متوافق مع الموقع",
+                                                  lat = config.optDouble("wgs84_lat", lat),
+                                                  lng = config.optDouble("wgs84_lng", lng),
+                                                  throttleKey = "env_cell_info",
+                                                  throttleMs = 8000L
+                                              )
+                                          } else {
+                                              param.result = java.util.ArrayList<Any>()
+                                          }"""
+              assert old_cell_all in text, "old_cell_all not found"
+              text = text.replace(old_cell_all, new_cell_all, 1)
+              
+              path.write_text(text, encoding="utf-8")
+              print("Successfully updated LocationHooker.kt! Total lines:", len(text.splitlines()))
+          else:
+              print('[=] LocationHooker.kt already patched')
+
+          # Patch MainViewModel.kt, SpoofingScreen.kt, and strings.xml (idempotent)
+          vm_path = pathlib.Path('app/src/main/java/com/suseoaa/locationspoofer/viewmodel/MainViewModel.kt')
+          if 'toggleCatchLogScreen' not in vm_path.read_text(encoding='utf-8'):
+              
+              # 1. Update MainViewModel.kt
+              vm_path = pathlib.Path("app/src/main/java/com/suseoaa/locationspoofer/viewmodel/MainViewModel.kt")
+              vm_text = vm_path.read_text(encoding="utf-8")
+              
+              old_vm_state = """            enableJitter = settingsRepository.enableJitter,
+                          altitudeInput = settingsRepository.altitude,
+                          satelliteCountInput = settingsRepository.satelliteCount
+                      )"""
+              
+              new_vm_state = """            enableJitter = settingsRepository.enableJitter,
+                          enableCatchLog = settingsRepository.enableCatchLog,
+                          altitudeInput = settingsRepository.altitude,
+                          satelliteCountInput = settingsRepository.satelliteCount
+                      )"""
+              assert old_vm_state in vm_text, "old_vm_state not found"
+              vm_text = vm_text.replace(old_vm_state, new_vm_state, 1)
+              
+              old_vm_init = """            refreshRecordCount()
+                          loadManageData()
+                      }"""
+              
+              new_vm_init = """            if (root) {
+                              locationRepository.initCatchLogFile()
+                              refreshCatchLogs()
+                          }
+                          refreshRecordCount()
+                          loadManageData()
+                      }"""
+              assert old_vm_init in vm_text, "old_vm_init not found"
+              vm_text = vm_text.replace(old_vm_init, new_vm_init, 1)
+              
+              old_vm_end = """    fun setIgnoredVersion(version: String) {
+                      settingsRepository.setIgnoredVersion(version)
+                  }
+              }"""
+              
+              new_vm_end = """    fun setIgnoredVersion(version: String) {
+                      settingsRepository.setIgnoredVersion(version)
+                  }
+              
+                  // ── إدارة سجل الصيد (Catch Log) الخاص بحزمة com.logistics.rider.hungerstation ──
+              
+                  fun toggleCatchLogScreen(show: Boolean) {
+                      _uiState.update { it.copy(isCatchLogScreen = show) }
+                      if (show) {
+                          refreshCatchLogs()
+                      }
+                  }
+              
+                  fun toggleEnableCatchLog() {
+                      val newVal = !_uiState.value.enableCatchLog
+                      settingsRepository.enableCatchLog = newVal
+                      SpooferProvider.enableCatchLog = newVal
+                      _uiState.update { it.copy(enableCatchLog = newVal) }
+                      syncMockSettings()
+                  }
+              
+                  fun toggleCatchLogAutoRefresh() {
+                      _uiState.update { it.copy(catchLogAutoRefresh = !it.catchLogAutoRefresh) }
+                  }
+              
+                  fun setCatchLogCategory(category: com.suseoaa.locationspoofer.data.model.CatchLogCategory) {
+                      _uiState.update { it.copy(selectedCatchLogCategory = category) }
+                  }
+              
+                  fun refreshCatchLogs() {
+                      viewModelScope.launch(Dispatchers.IO) {
+                          _uiState.update { it.copy(catchLogIsLoading = true) }
+                          val logs = locationRepository.readCatchLogs()
+                          _uiState.update {
+                              it.copy(
+                                  catchLogs = logs,
+                                  catchLogIsLoading = false
+                              )
+                          }
+                      }
+                  }
+              
+                  fun clearCatchLogs() {
+                      viewModelScope.launch(Dispatchers.IO) {
+                          locationRepository.clearCatchLogs()
+                          _uiState.update { it.copy(catchLogs = emptyList()) }
+                      }
+                  }
+              }"""
+              assert old_vm_end in vm_text, "old_vm_end not found"
+              vm_text = vm_text.replace(old_vm_end, new_vm_end, 1)
+              vm_path.write_text(vm_text, encoding="utf-8")
+              print("Updated MainViewModel.kt successfully!")
+              
+              # 2. Update SpoofingScreen.kt
+              sp_path = pathlib.Path("app/src/main/java/com/suseoaa/locationspoofer/ui/screen/SpoofingScreen.kt")
+              sp_text = sp_path.read_text(encoding="utf-8")
+              
+              old_rec_apps = """val RECOMMENDED_APPS = listOf(
+                  RecommendedApp(R.string.app_wechat, "com.tencent.mm", Icons.AutoMirrored.Outlined.Chat),
+                  RecommendedApp(R.string.app_chaoxing, "com.chaoxing.mobile", Icons.Outlined.School),
+                  RecommendedApp(R.string.app_amap, "com.autonavi.minimap", Icons.Outlined.Map),
+                  RecommendedApp(R.string.app_baidumap, "com.baidu.BaiduMap", Icons.Outlined.Map),
+                  RecommendedApp(R.string.app_tencentmap, "com.tencent.map", Icons.Outlined.Map),
+                  RecommendedApp(R.string.app_meituan, "com.sankuai.meituan", Icons.Outlined.LocalDining),
+                  RecommendedApp(R.string.app_dingtalk, "com.alibaba.android.rimet", Icons.Outlined.Work),
+                  RecommendedApp(R.string.app_google, "com.google.android.gms", Icons.Outlined.Android),
+                  RecommendedApp(R.string.app_settings, "com.android.settings", Icons.Outlined.Settings),
+              )"""
+              
+              new_rec_apps = """val RECOMMENDED_APPS = listOf(
+                  RecommendedApp(R.string.app_hungerstation, "com.logistics.rider.hungerstation", Icons.Outlined.DeliveryDining)
+              )"""
+              assert old_rec_apps in sp_text, "old_rec_apps not found"
+              sp_text = sp_text.replace(old_rec_apps, new_rec_apps, 1)
+              
+              old_top_bar_btns = """            IconButton(onClick = { showSavedLocations = true }, modifier = Modifier.size(36.dp)) {
+                              Icon(
+                                  Icons.Rounded.Bookmarks, stringResource(R.string.collection_list),
+                                  tint = MaterialTheme.colorScheme.onBackground,
+                                  modifier = Modifier.size(20.dp)
+                              )
+                          }
+                          Spacer(Modifier.width(8.dp))
+                          IconButton(onClick = onExpandSettings, modifier = Modifier.size(36.dp)) {"""
+              
+              new_top_bar_btns = """            IconButton(onClick = { viewModel.toggleCatchLogScreen(true) }, modifier = Modifier.size(36.dp)) {
+                              Icon(
+                                  Icons.Rounded.Terminal, stringResource(R.string.catch_log_title),
+                                  tint = AccentOrange,
+                                  modifier = Modifier.size(20.dp)
+                              )
+                          }
+                          Spacer(Modifier.width(8.dp))
+                          IconButton(onClick = { showSavedLocations = true }, modifier = Modifier.size(36.dp)) {
+                              Icon(
+                                  Icons.Rounded.Bookmarks, stringResource(R.string.collection_list),
+                                  tint = MaterialTheme.colorScheme.onBackground,
+                                  modifier = Modifier.size(20.dp)
+                              )
+                          }
+                          Spacer(Modifier.width(8.dp))
+                          IconButton(onClick = onExpandSettings, modifier = Modifier.size(36.dp)) {"""
+              assert old_top_bar_btns in sp_text, "old_top_bar_btns not found"
+              sp_text = sp_text.replace(old_top_bar_btns, new_top_bar_btns, 1)
+              
+              old_coord_section = """            SectionHeader(Icons.Rounded.Extension, stringResource(R.string.custom_coordinate_algo), isDark)"""
+              new_coord_section = """            // قسم سجل الصيد (Catch Log) الخاص بحزمة هنقرستيشن فقط
+                          SectionHeader(Icons.Rounded.Terminal, stringResource(R.string.catch_log_section_header), isDark)
+                          Spacer(Modifier.height(8.dp))
+                          Card(
+                              shape = RoundedCornerShape(12.dp),
+                              colors = CardDefaults.cardColors(containerColor = AppColors.cardBackground(isDark)),
+                              border = BorderStroke(1.dp, AccentOrange.copy(alpha = 0.3f)),
+                              elevation = CardDefaults.cardElevation(0.dp),
+                              modifier = Modifier.clickable { viewModel.toggleCatchLogScreen(true) }
+                          ) {
+                              Row(
+                                  modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+                                  verticalAlignment = Alignment.CenterVertically
+                              ) {
+                                  Box(
+                                      modifier = Modifier.size(36.dp).clip(RoundedCornerShape(8.dp))
+                                          .background(AccentOrange.copy(alpha = 0.14f)),
+                                      contentAlignment = Alignment.Center
+                                  ) {
+                                      Icon(Icons.Rounded.Terminal, null, tint = AccentOrange, modifier = Modifier.size(18.dp))
+                                  }
+                                  Spacer(Modifier.width(12.dp))
+                                  Column(modifier = Modifier.weight(1f)) {
+                                      Row(verticalAlignment = Alignment.CenterVertically) {
+                                          Text(
+                                              stringResource(R.string.catch_log_title),
+                                              color = MaterialTheme.colorScheme.onBackground,
+                                              fontSize = 14.sp,
+                                              fontWeight = FontWeight.Bold
+                                          )
+                                          Spacer(Modifier.width(8.dp))
+                                          Box(
+                                              modifier = Modifier
+                                                  .clip(RoundedCornerShape(6.dp))
+                                                  .background(AccentGreen.copy(alpha = 0.15f))
+                                                  .padding(horizontal = 6.dp, vertical = 2.dp)
+                                          ) {
+                                              Text(
+                                                  text = "${uiState.catchLogs.size}",
+                                                  color = AccentGreen,
+                                                  fontSize = 11.sp,
+                                                  fontWeight = FontWeight.Bold
+                                              )
+                                          }
+                                      }
+                                      Text(
+                                          stringResource(R.string.catch_log_card_desc),
+                                          color = AppColors.textSecondary(isDark),
+                                          fontSize = 11.sp
+                                      )
+                                  }
+                                  Icon(Icons.Outlined.ChevronRight, null, tint = AppColors.textSecondary(isDark), modifier = Modifier.size(16.dp))
+                              }
+                          }
+                          Spacer(Modifier.height(16.dp))
+              
+                          SectionHeader(Icons.Rounded.Extension, stringResource(R.string.custom_coordinate_algo), isDark)"""
+              
+              assert old_coord_section in sp_text, "old_coord_section not found"
+              sp_text = sp_text.replace(old_coord_section, new_coord_section, 1)
+              sp_path.write_text(sp_text, encoding="utf-8")
+              print("Updated SpoofingScreen.kt successfully!")
+              
+              # 3. Update strings.xml in values-ar, values, values-zh
+              ar_path = pathlib.Path("app/src/main/res/values-ar/strings.xml")
+              ar_text = ar_path.read_text(encoding="utf-8")
+              ar_additions = """    <string name="custom_baidu_key">مفتاح Baidu API مخصص</string>
+                  <string name="custom_baidu_key_hint">أدخل مفتاح خرائط بايدو الخاص بك...</string>
+                  <string name="custom_google_key">مفتاح Google API مخصص</string>
+                  <string name="custom_google_key_hint">أدخل مفتاح خرائط جوجل الخاص بك...</string>
+                  <string name="title_manage_data">إدارة البيانات المجمعة</string>
+                  <string name="manage_collected_data_desc">عرض وتحديد وحذف بيانات البيئة المجمعة محلياً</string>
+                  <string name="selected_items">تم تحديد %d</string>
+                  <string name="select_all">تحديد الكل</string>
+                  <string name="app_hungerstation">هنقرستيشن للركاب (HungerStation Rider)</string>
+                  <string name="catch_log_section_header">سجل الصيد والاعتراض (LOG)</string>
+                  <string name="catch_log_title">سجل الصيد (Log)</string>
+                  <string name="catch_log_card_desc">مراقبة حية لعمليات صيد الطلبات والإحداثيات والحماية لحزمة com.logistics.rider.hungerstation فقط</string>
+                  <string name="catch_log_exclusive_pkg">يعمل حصرياً مع هنقرستيشن (HungerStation)</string>
+                  <string name="catch_log_exclusive_desc">الحزمة المستهدفة: com.logistics.rider.hungerstation فقط</string>
+                  <string name="catch_log_search_hint">ابحث في سجل الصيد أو الإحداثيات...</string>
+                  <string name="catch_log_live">مباشر</string>
+                  <string name="catch_log_refresh">تحديث السجل</string>
+                  <string name="catch_log_clear">مسح السجل</string>
+                  <string name="catch_log_clear_confirm">هل تريد مسح جميع سجلات الصيد المسجلة لحزمة هنقرستيشن؟</string>
+                  <string name="catch_log_empty">لا توجد سجلات صيد حتى الآن</string>
+                  <string name="catch_log_empty_hint">افتح تطبيق هنقرستيشن (com.logistics.rider.hungerstation) مع تفعيل المحاكاة ليظهر سجل الصيد مباشرة</string>
+                  <string name="catch_log_use_coords">اعتماد الإحداثيات</string>
+                  <string name="catch_log_coords_applied">تم تطبيق الإحداثيات المصطادة على الخريطة</string>
+                  <string name="catch_cat_all">الكل</string>
+                  <string name="catch_cat_order">طلبات وشبكة</string>
+                  <string name="catch_cat_location">موقع GPS</string>
+                  <string name="catch_cat_security">حماية وتخطي</string>
+                  <string name="catch_cat_env">بيئة وأبراج</string>
+                  <string name="catch_cat_system">النظام</string>
+              </resources>"""
+              ar_text = ar_text.replace("</resources>", ar_additions)
+              ar_path.write_text(ar_text, encoding="utf-8")
+              
+              en_path = pathlib.Path("app/src/main/res/values/strings.xml")
+              en_text = en_path.read_text(encoding="utf-8")
+              en_additions = """    <string name="app_hungerstation">HungerStation Rider</string>
+                  <string name="catch_log_section_header">CATCH &amp; INTERCEPTION LOG</string>
+                  <string name="catch_log_title">Catch Log (سجل صيد)</string>
+                  <string name="catch_log_card_desc">Live interception &amp; catch log exclusively for com.logistics.rider.hungerstation</string>
+                  <string name="catch_log_exclusive_pkg">Active Exclusively for HungerStation</string>
+                  <string name="catch_log_exclusive_desc">Target package: com.logistics.rider.hungerstation only</string>
+                  <string name="catch_log_search_hint">Search catch log or coordinates...</string>
+                  <string name="catch_log_live">Live</string>
+                  <string name="catch_log_refresh">Refresh Log</string>
+                  <string name="catch_log_clear">Clear Log</string>
+                  <string name="catch_log_clear_confirm">Are you sure you want to clear all catch logs for HungerStation?</string>
+                  <string name="catch_log_empty">No catch logs recorded yet</string>
+                  <string name="catch_log_empty_hint">Open HungerStation (com.logistics.rider.hungerstation) while spoofing to see live catch logs</string>
+                  <string name="catch_log_use_coords">Use Coords</string>
+                  <string name="catch_log_coords_applied">Caught coordinates applied to map</string>
+                  <string name="catch_cat_all">All</string>
+                  <string name="catch_cat_order">Orders &amp; API</string>
+                  <string name="catch_cat_location">GPS Location</string>
+                  <string name="catch_cat_security">Anti-Cheat</string>
+                  <string name="catch_cat_env">Environment</string>
+                  <string name="catch_cat_system">System</string>
+              </resources>"""
+              en_text = en_text.replace("</resources>", en_additions)
+              en_path.write_text(en_text, encoding="utf-8")
+              
+              zh_path = pathlib.Path("app/src/main/res/values-zh/strings.xml")
+              zh_text = zh_path.read_text(encoding="utf-8")
+              zh_additions = """    <string name="app_hungerstation">HungerStation Rider</string>
+                  <string name="catch_log_section_header">捕获与拦截日志 (LOG)</string>
+                  <string name="catch_log_title">捕获日志 (سجل صيد)</string>
+                  <string name="catch_log_card_desc">仅针对 com.logistics.rider.hungerstation 的实时订单、定位与防检测拦截日志</string>
+                  <string name="catch_log_exclusive_pkg">仅对 HungerStation 生效</string>
+                  <string name="catch_log_exclusive_desc">目标包名: 仅限 com.logistics.rider.hungerstation</string>
+                  <string name="catch_log_search_hint">搜索捕获日志或坐标...</string>
+                  <string name="catch_log_live">实时</string>
+                  <string name="catch_log_refresh">刷新日志</string>
+                  <string name="catch_log_clear">清空日志</string>
+                  <string name="catch_log_clear_confirm">确定要清空 HungerStation 的所有捕获日志吗？</string>
+                  <string name="catch_log_empty">暂无捕获日志</string>
+                  <string name="catch_log_empty_hint">在开启模拟时打开 HungerStation (com.logistics.rider.hungerstation) 即可查看实时日志</string>
+                  <string name="catch_log_use_coords">应用坐标</string>
+                  <string name="catch_log_coords_applied">已将捕获的坐标应用到地图</string>
+                  <string name="catch_cat_all">全部</string>
+                  <string name="catch_cat_order">订单与网络</string>
+                  <string name="catch_cat_location">GPS 定位</string>
+                  <string name="catch_cat_security">防检测拦截</string>
+                  <string name="catch_cat_env">基站与环境</string>
+                  <string name="catch_cat_system">系统</string>
+              </resources>"""
+              zh_text = zh_text.replace("</resources>", zh_additions)
+              zh_path.write_text(zh_text, encoding="utf-8")
+              print("Updated strings.xml files successfully!")
+          else:
+              print('[=] MainViewModel.kt, SpoofingScreen.kt, and strings.xml already patched')
+
+          # Patch AppCoordinateScreen.kt
+          ac_path = pathlib.Path('app/src/main/java/com/suseoaa/locationspoofer/ui/screen/AppCoordinateScreen.kt')
+          if ac_path.exists():
+              ac_text = ac_path.read_text(encoding='utf-8')
+              ac_text = ac_text.replace('uiState.appCoordinateSystems[app.packageName] ?: "GCJ-02"', 'uiState.appCoordinateSystems[app.packageName] ?: "WGS-84"')
+              ac_path.write_text(ac_text, encoding='utf-8')
+
+          # Bump version in app/build.gradle.kts if needed
+          bg_path = pathlib.Path('app/build.gradle.kts')
+          if bg_path.exists():
+              bg_text = bg_path.read_text(encoding='utf-8')
+              bg_text = re.sub(r'versionCode\s*=\s*13625', 'versionCode = 13626', bg_text)
+              bg_text = re.sub(r'versionName\s*=\s*"1\.36\.25"', 'versionName = "1.36.26"', bg_text)
+              bg_path.write_text(bg_text, encoding='utf-8')
+              print('[+] Updated app/build.gradle.kts version')
+          PYEOF
+
+      - name: Commit & Push Patched Files to Repository
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if [ -n "$(git status --porcelain)" ]; then
+            git add -A
+            git commit -m "feat: add Catch Log (سجل صيد) and restrict scope to com.logistics.rider.hungerstation only [skip ci]"
+            git push || echo "Notice: git push skipped or branch protected"
+          else
+            echo "Repository already contains all Catch Log changes."
+          fi
+
+      - name: Extract Version Info
+        id: check_version
+        run: |
+          VERSION_NAME=$(grep 'versionName =' app/build.gradle.kts | head -n 1 | awk -F'"' '{print $2}')
+          if [ -z "$VERSION_NAME" ]; then
+            VERSION_NAME="1.36.26"
+          fi
+          TAG_NAME="v${VERSION_NAME}-hungerstation-log"
+          echo "version=$VERSION_NAME" >> $GITHUB_OUTPUT
+          echo "tag=$TAG_NAME" >> $GITHUB_OUTPUT
+
+      - name: Generate Changelog
+        run: |
+          cat << 'CLEOF' > changelog.txt
+          ## LocationSpoofer ${{ steps.check_version.outputs.version }} — HungerStation Catch Log (سجل الصيد)
+
+          ### ✨ الميزات والتعديلات المضافة تلقائياً
+          - **سجل الصيد (Catch Log / سجل Log):**
+            - إضافة شاشة `CatchLogScreen` لمراقبة كافة عمليات الصيد والاعتراض في الوقت الفعلي مع الفلترة حسب التصنيف (`طلبات وشبكة`، `موقع GPS`، `حماية وتخطي`، `بيئة وأبراج`، `النظام`).
+            - اعتراض وتسجيل طلبات الشبكة والـ API (`OkHttpClient`) وإشعارات الطلبات الجديدة (`NotificationManager`) وطلبات الموقع (`LocationManager` / `FusedLocation`) داخل هنقرستيشن.
+            - إمكانية اعتماد أي إحداثيات مصطادة من السجل إلى الخريطة مباشرة بضغطة واحدة أو نسخ السجل بالكامل.
+          - **تخصيص العمل لحزمة هنقرستيشن فقط (`com.logistics.rider.hungerstation`):**
+            - تقييد `xposed_scope.xml` و`scope.list` و`LocationHooker.kt` و`LSPosedManager.kt` للعمل حصرياً مع حزمة `com.logistics.rider.hungerstation`.
+            - ضبط نظام الإحداثيات الافتراضي إلى `WGS-84` لمنع أي إزاحة في الخريطة داخل تطبيق هنقرستيشن.
+          CLEOF
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Prepare Signing Keystore
+        env:
+          ENCODED_KEYSTORE: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$ENCODED_KEYSTORE" ]; then
+            echo "$ENCODED_KEYSTORE" | base64 -d > "$RUNNER_TEMP/keystore.jks"
+          else
+            echo "Generating fallback keystore for release signing..."
+            keytool -genkeypair -v \
+              -keystore "$RUNNER_TEMP/keystore.jks" \
+              -alias "suse-app-key" \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass "LinuxisUbuntu18" \
+              -keypass "LinuxisUbuntu18" \
+              -dname "CN=LocationSpoofer, OU=Dev, O=SUSE, L=Riyadh, S=Riyadh, C=SA"
+          fi
+
+      - name: Build Release APK
+        env:
+          KEYSTORE_FILE_PATH: ${{ runner.temp }}/keystore.jks
+          KEYSTORE_PASSWORD:  ${{ secrets.KEYSTORE_PASSWORD || 'LinuxisUbuntu18' }}
+          KEY_ALIAS:          ${{ secrets.KEY_ALIAS || 'suse-app-key' }}
+          KEY_PASSWORD:       ${{ secrets.KEY_PASSWORD || 'LinuxisUbuntu18' }}
+          GOOGLE_MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
+        run: |
+          chmod +x ./gradlew
+          ./gradlew --no-daemon :app:assembleRelease
+
+          APK_SRC="app/build/outputs/apk/release"
+          APK_NAME="LocationSpoofer-${{ steps.check_version.outputs.tag }}.apk"
+          find "$APK_SRC" -name "*.apk" -exec mv {} "$APK_SRC/$APK_NAME" \;
+          echo "APK_NAME=$APK_NAME" >> $GITHUB_ENV
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LocationSpoofer-${{ steps.check_version.outputs.tag }}
+          path: app/build/outputs/apk/release/${{ env.APK_NAME }}
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.check_version.outputs.tag }}
+          name: "LocationSpoofer ${{ steps.check_version.outputs.version }} — HungerStation Catch Log"
+          body_path: changelog.txt
+          files: app/build/outputs/apk/release/${{ env.APK_NAME }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
