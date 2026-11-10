@@ -8,6 +8,10 @@ import org.json.JSONObject
 
 class ConfigManager(private val rootManager: RootManager) {
 
+    companion object {
+        const val TARGET_PACKAGE = "com.logistics.rider.hungerstation"
+    }
+
     suspend fun saveConfig(
         lat: Double,
         lng: Double,
@@ -26,7 +30,8 @@ class ConfigManager(private val rootManager: RootManager) {
         mockBluetooth: Boolean = true,
         enableJitter: Boolean = true,
         altitude: Double = 0.0,
-        satelliteCount: Int = 20
+        satelliteCount: Int = 20,
+        enableCatchLog: Boolean = true
     ) = withContext(Dispatchers.IO) {
         val routeArray = JSONArray()
         routePoints.forEach { p ->
@@ -40,6 +45,8 @@ class ConfigManager(private val rootManager: RootManager) {
             put("lat", lat)
             put("lng", lng)
             put("active", active)
+            put("target_package", TARGET_PACKAGE)
+            put("enable_catch_log", enableCatchLog)
             put("sim_mode", simMode)
             put("sim_bearing", simBearing.toDouble())
             put("start_timestamp", startTimestamp)
@@ -65,7 +72,13 @@ class ConfigManager(private val rootManager: RootManager) {
             put("satellite_count", satelliteCount)
             
             val coordSysObj = JSONObject()
-            appCoordinateSystems.forEach { (pkg, sys) -> coordSysObj.put(pkg, sys) }
+            // افتراضياً ضبط WGS-84 لحزمة هنقرستيشن لتجنب إزاحة الإحداثيات
+            coordSysObj.put(TARGET_PACKAGE, appCoordinateSystems[TARGET_PACKAGE] ?: "WGS-84")
+            appCoordinateSystems.forEach { (pkg, sys) ->
+                if (pkg == TARGET_PACKAGE) {
+                    coordSysObj.put(pkg, sys)
+                }
+            }
             put("app_coordinate_systems", coordSysObj)
         }
 
@@ -75,6 +88,9 @@ class ConfigManager(private val rootManager: RootManager) {
             echo "$escapedJson" > /data/local/tmp/locationspoofer_config.json
             chmod 777 /data/local/tmp/locationspoofer_config.json
             chcon u:object_r:shell_data_file:s0 /data/local/tmp/locationspoofer_config.json
+            touch ${RootManager.CATCH_LOG_FILE}
+            chmod 666 ${RootManager.CATCH_LOG_FILE}
+            chcon u:object_r:shell_data_file:s0 ${RootManager.CATCH_LOG_FILE}
         """.trimIndent()
 
         rootManager.executeCommand(command)

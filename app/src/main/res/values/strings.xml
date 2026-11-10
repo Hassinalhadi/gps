@@ -181,4 +181,25 @@
     <string name="route_library">Route Library</string>
     <string name="no_saved_routes">No saved routes</string>
     <string name="route_nodes_count">%d points</string>
+    <string name="app_hungerstation">HungerStation Rider</string>
+    <string name="catch_log_section_header">CATCH &amp; INTERCEPTION LOG</string>
+    <string name="catch_log_title">Catch Log (سجل صيد)</string>
+    <string name="catch_log_card_desc">Live interception &amp; catch log exclusively for com.logistics.rider.hungerstation</string>
+    <string name="catch_log_exclusive_pkg">Active Exclusively for HungerStation</string>
+    <string name="catch_log_exclusive_desc">Target package: com.logistics.rider.hungerstation only</string>
+    <string name="catch_log_search_hint">Search catch log or coordinates...</string>
+    <string name="catch_log_live">Live</string>
+    <string name="catch_log_refresh">Refresh Log</string>
+    <string name="catch_log_clear">Clear Log</string>
+    <string name="catch_log_clear_confirm">Are you sure you want to clear all catch logs for HungerStation?</string>
+    <string name="catch_log_empty">No catch logs recorded yet</string>
+    <string name="catch_log_empty_hint">Open HungerStation (com.logistics.rider.hungerstation) while spoofing to see live catch logs</string>
+    <string name="catch_log_use_coords">Use Coords</string>
+    <string name="catch_log_coords_applied">Caught coordinates applied to map</string>
+    <string name="catch_cat_all">All</string>
+    <string name="catch_cat_order">Orders &amp; API</string>
+    <string name="catch_cat_location">GPS Location</string>
+    <string name="catch_cat_security">Anti-Cheat</string>
+    <string name="catch_cat_env">Environment</string>
+    <string name="catch_cat_system">System</string>
 </resources>

@@ -75,6 +75,10 @@ class SettingsManager(context: Context) {
         get() = prefs.getBoolean("enable_jitter", true)
         set(value) = prefs.edit().putBoolean("enable_jitter", value).apply()
 
+    var enableCatchLog: Boolean
+        get() = prefs.getBoolean("enable_catch_log", true)
+        set(value) = prefs.edit().putBoolean("enable_catch_log", value).apply()
+
     var altitude: String
         get() = prefs.getString("altitude", "0.0") ?: "0.0"
         set(value) = prefs.edit().putString("altitude", value).apply()
@@ -182,6 +186,9 @@ class SettingsManager(context: Context) {
             }
         } catch (e: Exception) {
             e.printStackTrace()
+        }
+        if (!map.containsKey("com.logistics.rider.hungerstation")) {
+            map["com.logistics.rider.hungerstation"] = "WGS-84"
         }
         return map
     }

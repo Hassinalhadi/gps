@@ -237,32 +237,118 @@ class LocationHooker : XposedModule() {
 
 
     companion object {
-
-        // 系统进程同样需要覆盖（android进程持有LocationManagerService）
+        const val TARGET_PACKAGE = "com.logistics.rider.hungerstation"
+        const val CATCH_LOG_FILE = "/data/local/tmp/locationspoofer_catch_log.jsonl"
         val SYSTEM_PACKAGES = setOf("android", "system", "com.android.phone")
     }
 
-    fun handleLoadPackage(pkg: String, classLoader: ClassLoader) {
-        
+    private val catchLogLastTime = ConcurrentHashMap<String, Long>()
+    private val catchLogHitCounts = ConcurrentHashMap<String, Int>()
+    private val catchLogQueue = java.util.concurrent.LinkedBlockingQueue<String>(1000)
+    @Volatile
+    private var isCatchLogWorkerStarted = false
+    private val catchLogLock = Any()
 
-        // 宿主App自报平安
+    private fun startCatchLogWorkerIfNeeded() {
+        if (!isCatchLogWorkerStarted) {
+            synchronized(catchLogLock) {
+                if (!isCatchLogWorkerStarted) {
+                    isCatchLogWorkerStarted = true
+                    Thread {
+                        while (true) {
+                            try {
+                                val line = catchLogQueue.take()
+                                val file = File(CATCH_LOG_FILE)
+                                if (file.exists() && file.canWrite()) {
+                                    file.appendText(line + "\n")
+                                } else {
+                                    try {
+                                        file.writeText(line + "\n")
+                                    } catch (_: Throwable) {}
+                                }
+                            } catch (_: Throwable) {}
+                        }
+                    }.apply {
+                        isDaemon = true
+                        name = "HS_CatchLogWriter"
+                        start()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun recordCatchLog(
+        category: String,
+        title: String,
+        detail: String,
+        lat: Double? = null,
+        lng: Double? = null,
+        throttleKey: String? = null,
+        throttleMs: Long = 3000L
+    ) {
+        try {
+            val cfg = lastConfig
+            if (cfg != null && !cfg.optBoolean("enable_catch_log", true)) return
+
+            val now = System.currentTimeMillis()
+            var hits = 1
+            if (throttleKey != null) {
+                val totalHits = (catchLogHitCounts[throttleKey] ?: 0) + 1
+                catchLogHitCounts[throttleKey] = totalHits
+                val last = catchLogLastTime[throttleKey] ?: 0L
+                if (now - last < throttleMs) {
+                    return
+                }
+                catchLogLastTime[throttleKey] = now
+                hits = totalHits
+            }
+
+            startCatchLogWorkerIfNeeded()
+
+            val uniqueId = now * 1000L + (rng.nextInt(900) + 100)
+            val json = JSONObject().apply {
+                put("id", uniqueId)
+                put("timestamp", now)
+                put("packageName", TARGET_PACKAGE)
+                put("category", category)
+                put("title", title)
+                put("detail", detail)
+                if (lat != null && !lat.isNaN()) put("lat", lat)
+                if (lng != null && !lng.isNaN()) put("lng", lng)
+                put("hitCount", hits)
+            }
+            val jsonStr = json.toString()
+            android.util.Log.i("HS_CatchLog", jsonStr)
+            catchLogQueue.offer(jsonStr)
+        } catch (_: Throwable) {}
+    }
+
+    fun handleLoadPackage(pkg: String, classLoader: ClassLoader) {
         if (pkg == "com.suseoaa.locationspoofer") {
-            return // 宿主App不需要注入定位Hook
+            return
         }
 
-        // 系统进程：允许执行所有的环境数据Hook，实现系统原生界面的完美覆盖
-        // if (SYSTEM_PACKAGES.contains(pkg)) {
-        //     hookLocationAPIs(classLoader, pkg)
-        //     return
-        // }
+        // حصر العمل مع حزمة com.logistics.rider.hungerstation فقط
+        val basePkg = pkg.substringBefore(":")
+        if (basePkg != TARGET_PACKAGE) {
+            return
+        }
 
-
-        XposedBridge.log("[LocationSpoofer] Hooking package: $pkg")
+        XposedBridge.log("[LocationSpoofer] Hooking HungerStation package only: $pkg")
+        recordCatchLog(
+            category = "SYSTEM",
+            title = "تفعيل الصيد والحقن - هنقرستيشن",
+            detail = "تم ربط وحدة الصيد وتزييف الموقع بحزمة $pkg بنجاح",
+            throttleKey = "init_$pkg",
+            throttleMs = 5000L
+        )
 
         // ★ 反检测: 必须在其他Hook之前安装,隐藏Xposed环境
         hookAntiDetection(classLoader)
 
         hookLocationAPIs(classLoader, pkg)
+        hookOrderAndNetworkCatch(classLoader, pkg)
         hookWifiEnvironment(classLoader)
         hookCellEnvironment(classLoader)
         hookConnectivityLayer(classLoader)
@@ -308,6 +394,13 @@ class LocationHooker : XposedModule() {
                         }.toTypedArray()
                         if (filtered.size != stackTrace.size) {
                             param.result = filtered
+                            recordCatchLog(
+                                category = "SECURITY",
+                                title = "اعتراض فحص StackTrace",
+                                detail = "تم إخفاء إطارات Xposed/LSPosed من فحص الحماية في هنقرستيشن",
+                                throttleKey = "sec_stacktrace",
+                                throttleMs = 10000L
+                            )
                         }
                     }
                 })
@@ -399,6 +492,13 @@ class LocationHooker : XposedModule() {
                     if (isMockOp) {
                         // MODE_IGNORED = 1, MODE_ERRORED = 2
                         param.result = 1 // MODE_IGNORED，让对方以为我们没有被授权模拟位置
+                        recordCatchLog(
+                            category = "SECURITY",
+                            title = "اعتراض فحص AppOps Mock",
+                            detail = "حاول التطبيق فحص صلاحية OP_MOCK_LOCATION وتم إرجاع MODE_IGNORED",
+                            throttleKey = "sec_appops_mock",
+                            throttleMs = 8000L
+                        )
                     }
                 }
             }
@@ -574,9 +674,9 @@ class LocationHooker : XposedModule() {
                         // optString 在 key 不存在时返回 ""（空字符串），不是 null！
                         // 必须用 has() 先检查，否则会错误匹配到空字符串分支
                         val targetSys = if (appSystems?.has(basePkg) == true) {
-                            appSystems.optString(basePkg, "GCJ-02")
+                            appSystems.optString(basePkg, "WGS-84")
                         } else {
-                            "GCJ-02"
+                            "WGS-84"
                         }
                         val baseLat = when (targetSys) {
                             "WGS-84" -> config.optDouble("wgs84_lat", param.result as Double)
@@ -588,7 +688,17 @@ class LocationHooker : XposedModule() {
                             "BD-09" -> config.optDouble("bd09_lng", 0.0)
                             else -> config.optDouble("lng", 0.0)
                         }
-                        param.result = getJitteredLocation(baseLat, baseLng).first
+                        val jittered = getJitteredLocation(baseLat, baseLng)
+                        param.result = jittered.first
+                        recordCatchLog(
+                            category = "LOCATION",
+                            title = "صيد طلب إحداثيات GPS ($targetSys)",
+                            detail = "تم تزويد هنقرستيشن بالإحداثيات المزيفة: (${String.format(java.util.Locale.US, "%.6f", jittered.first)}, ${String.format(java.util.Locale.US, "%.6f", jittered.second)})",
+                            lat = jittered.first,
+                            lng = jittered.second,
+                            throttleKey = "loc_get_lat_lng",
+                            throttleMs = 4000L
+                        )
                     }
                 }
             }
@@ -601,9 +711,9 @@ class LocationHooker : XposedModule() {
                         val basePkg = currentPkg.substringBefore(":")
                         // optString 在 key 不存在时返回 ""（空字符串），不是 null！
                         val targetSys = if (appSystems?.has(basePkg) == true) {
-                            appSystems.optString(basePkg, "GCJ-02")
+                            appSystems.optString(basePkg, "WGS-84")
                         } else {
-                            "GCJ-02"
+                            "WGS-84"
                         }
                         val baseLat = when (targetSys) {
                             "WGS-84" -> config.optDouble("wgs84_lat", 0.0)
@@ -676,6 +786,15 @@ class LocationHooker : XposedModule() {
                     val config = readConfig()
                     if (config != null && config.optBoolean("active", false)) {
                         param.result = false
+                        recordCatchLog(
+                            category = "SECURITY",
+                            title = "تخطي فحص الموقع الوهمي (${param.method?.name ?: "isMock"})",
+                            detail = "طلب هنقرستيشن التحقق من isMock/isFromMockProvider وتم إرجاع false",
+                            lat = config.optDouble("wgs84_lat", config.optDouble("lat", 0.0)),
+                            lng = config.optDouble("wgs84_lng", config.optDouble("lng", 0.0)),
+                            throttleKey = "sec_is_mock",
+                            throttleMs = 6000L
+                        )
                     }
                 }
             }
@@ -1040,6 +1159,165 @@ class LocationHooker : XposedModule() {
         // ── 第三方地图SDK深度Hook(腾讯/百度) ──
         hookTencentSDK(classLoader)
         hookBaiduSDK(classLoader)
+    }
+
+    /**
+     * سجل الصيد الخاص بطلبات وشبكة وإشعارات وموقع تطبيق هنقرستيشن (com.logistics.rider.hungerstation)
+     */
+    private fun hookOrderAndNetworkCatch(classLoader: ClassLoader, currentPkg: String) {
+        // 1. صيد طلبات LocationManager (getLastKnownLocation / requestLocationUpdates)
+        try {
+            val locMgrClass = XposedHelpers.findClass("android.location.LocationManager", classLoader)
+            XposedBridge.hookAllMethods(locMgrClass, "getLastKnownLocation", object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    val config = readConfig() ?: return
+                    if (!config.optBoolean("active", false)) return
+                    val provider = param.args.firstOrNull() as? String ?: "gps"
+                    val lat = config.optDouble("wgs84_lat", config.optDouble("lat", 0.0))
+                    val lng = config.optDouble("wgs84_lng", config.optDouble("lng", 0.0))
+                    recordCatchLog(
+                        category = "LOCATION",
+                        title = "صيد getLastKnownLocation ($provider)",
+                        detail = "طلب هنقرستيشن آخر موقع معروف عبر المزود: $provider",
+                        lat = lat,
+                        lng = lng,
+                        throttleKey = "loc_last_known_$provider",
+                        throttleMs = 5000L
+                    )
+                }
+            })
+
+            XposedBridge.hookAllMethods(locMgrClass, "requestLocationUpdates", object : XC_MethodHook() {
+                override fun beforeHookedMethod(param: MethodHookParam) {
+                    val config = readConfig()
+                    val lat = config?.optDouble("wgs84_lat", config.optDouble("lat", 0.0))
+                    val lng = config?.optDouble("wgs84_lng", config.optDouble("lng", 0.0))
+                    val firstArg = param.args.firstOrNull()?.toString() ?: "gps"
+                    recordCatchLog(
+                        category = "LOCATION",
+                        title = "صيد اشتراك تحديثات الموقع (requestLocationUpdates)",
+                        detail = "سجل هنقرستيشن مستمعاً لتحديثات الموقع الحية ($firstArg)",
+                        lat = lat,
+                        lng = lng,
+                        throttleKey = "loc_req_updates",
+                        throttleMs = 8000L
+                    )
+                }
+            })
+        } catch (_: Throwable) {}
+
+        // 2. صيد Google Play Services FusedLocation (LocationResult) داخل حزمة هنقرستيشن
+        try {
+            val locResultClass = XposedHelpers.findClassIfExists("com.google.android.gms.location.LocationResult", classLoader)
+            if (locResultClass != null) {
+                XposedBridge.hookAllMethods(locResultClass, "getLastLocation", object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val config = readConfig() ?: return
+                        if (!config.optBoolean("active", false)) return
+                        val lat = config.optDouble("wgs84_lat", config.optDouble("lat", 0.0))
+                        val lng = config.optDouble("wgs84_lng", config.optDouble("lng", 0.0))
+                        recordCatchLog(
+                            category = "LOCATION",
+                            title = "صيد FusedLocation (LocationResult)",
+                            detail = "استلم هنقرستيشن تحديث موقع عبر خدمات Google Play",
+                            lat = lat,
+                            lng = lng,
+                            throttleKey = "loc_fused_result",
+                            throttleMs = 4000L
+                        )
+                    }
+                })
+            }
+        } catch (_: Throwable) {}
+
+        // 3. صيد طلبات الشبكة والـ API الخاصة بالطلبات والتوصيل في هنقرستيشن (OkHttp3 & HttpURLConnection)
+        try {
+            val okHttpClientClass = XposedHelpers.findClassIfExists("okhttp3.OkHttpClient", classLoader)
+            if (okHttpClientClass != null) {
+                XposedBridge.hookAllMethods(okHttpClientClass, "newCall", object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        try {
+                            val req = param.args.firstOrNull() ?: return
+                            val urlObj = try { XposedHelpers.callMethod(req, "url") } catch (_: Throwable) { null }
+                            val urlStr = urlObj?.toString() ?: return
+                            val methodStr = try { XposedHelpers.callMethod(req, "method") as? String } catch (_: Throwable) { "HTTP" } ?: "HTTP"
+
+                            val lowerUrl = urlStr.lowercase()
+                            val isOrderRelated = lowerUrl.contains("order") ||
+                                lowerUrl.contains("dispatch") ||
+                                lowerUrl.contains("offer") ||
+                                lowerUrl.contains("delivery") ||
+                                lowerUrl.contains("assign") ||
+                                lowerUrl.contains("task") ||
+                                lowerUrl.contains("job") ||
+                                lowerUrl.contains("shift") ||
+                                lowerUrl.contains("rider") ||
+                                lowerUrl.contains("location") ||
+                                lowerUrl.contains("ping") ||
+                                lowerUrl.contains("hungerstation") ||
+                                lowerUrl.contains("logistics")
+
+                            if (isOrderRelated) {
+                                val config = readConfig()
+                                val lat = config?.optDouble("wgs84_lat", config.optDouble("lat", 0.0))
+                                val lng = config?.optDouble("wgs84_lng", config.optDouble("lng", 0.0))
+                                val shortPath = try {
+                                    val u = java.net.URI(urlStr)
+                                    (u.host ?: "") + (u.path ?: urlStr)
+                                } catch (_: Throwable) { urlStr.take(120) }
+
+                                val title = when {
+                                    lowerUrl.contains("order") || lowerUrl.contains("offer") || lowerUrl.contains("dispatch") || lowerUrl.contains("assign") ->
+                                        "صيد طلب/إرسالية ($methodStr)"
+                                    lowerUrl.contains("location") || lowerUrl.contains("ping") ->
+                                        "صيد إرسال موقع للسيرفر ($methodStr)"
+                                    else ->
+                                        "صيد اتصال سيرفر هنقرستيشن ($methodStr)"
+                                }
+                                recordCatchLog(
+                                    category = "ORDER",
+                                    title = title,
+                                    detail = "الرابط: $shortPath",
+                                    lat = lat,
+                                    lng = lng,
+                                    throttleKey = "net_${methodStr}_${shortPath.take(60)}",
+                                    throttleMs = 2000L
+                                )
+                            }
+                        } catch (_: Throwable) {}
+                    }
+                })
+            }
+        } catch (_: Throwable) {}
+
+        // 4. صيد الإشعارات الواردة داخل تطبيق هنقرستيشن (مثل إشعارات الطلبات الجديدة)
+        try {
+            val notifMgrClass = XposedHelpers.findClass("android.app.NotificationManager", classLoader)
+            XposedBridge.hookAllMethods(notifMgrClass, "notify", object : XC_MethodHook() {
+                override fun beforeHookedMethod(param: MethodHookParam) {
+                    try {
+                        val notif = param.args.firstOrNull { it is android.app.Notification } as? android.app.Notification ?: return
+                        val extras = notif.extras ?: return
+                        val title = extras.getCharSequence(android.app.Notification.EXTRA_TITLE)?.toString() ?: ""
+                        val text = extras.getCharSequence(android.app.Notification.EXTRA_TEXT)?.toString() ?: ""
+                        if (title.isNotBlank() || text.isNotBlank()) {
+                            val config = readConfig()
+                            val lat = config?.optDouble("wgs84_lat", config.optDouble("lat", 0.0))
+                            val lng = config?.optDouble("wgs84_lng", config.optDouble("lng", 0.0))
+                            recordCatchLog(
+                                category = "ORDER",
+                                title = "صيد إشعار هنقرستيشن: ${title.ifBlank { "إشعار جديد" }}",
+                                detail = text.ifBlank { "تم التقاط إشعار صادر من حزمة هنقرستيشن" },
+                                lat = lat,
+                                lng = lng,
+                                throttleKey = "notif_${title}_${text.take(30)}",
+                                throttleMs = 2000L
+                            )
+                        }
+                    } catch (_: Throwable) {}
+                }
+            })
+        } catch (_: Throwable) {}
     }
 
     /**
@@ -1568,6 +1846,13 @@ class LocationHooker : XposedModule() {
                     } catch (e: Throwable) { /* 忽略 */ }
                 }
                 param.result = fakeList
+                recordCatchLog(
+                    category = "ENV",
+                    title = "صيد مسح شبكات Wi-Fi",
+                    detail = "تم تزويد هنقرستيشن بـ ${fakeList.size} شبكة Wi-Fi محاكاة",
+                    throttleKey = "env_wifi_scan",
+                    throttleMs = 8000L
+                )
             }
         }
 
@@ -1877,7 +2162,17 @@ class LocationHooker : XposedModule() {
                     "getAllCellInfo" -> {
                         try {
                             if (config.optBoolean("mock_cell", true)) {
-                                param.result = buildFakeCellInfoList(classLoader, lat, lng, config)
+                                val cellList = buildFakeCellInfoList(classLoader, lat, lng, config)
+                                param.result = cellList
+                                recordCatchLog(
+                                    category = "ENV",
+                                    title = "صيد فحص أبراج الاتصال (CellInfo)",
+                                    detail = "تم تزويد هنقرستيشن ببيانات ${cellList.size} برج اتصال متوافق مع الموقع",
+                                    lat = config.optDouble("wgs84_lat", lat),
+                                    lng = config.optDouble("wgs84_lng", lng),
+                                    throttleKey = "env_cell_info",
+                                    throttleMs = 8000L
+                                )
                             } else {
                                 param.result = java.util.ArrayList<Any>()
                             }

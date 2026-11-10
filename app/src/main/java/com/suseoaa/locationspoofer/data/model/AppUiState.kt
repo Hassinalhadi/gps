@@ -82,7 +82,7 @@ data class AppState(
     val baiduApiKey: String = "",
     val googleApiKey: String = "",
     val appSha1: String = "",
-    val appCoordinateSystems: Map<String, String> = emptyMap(),
+    val appCoordinateSystems: Map<String, String> = mapOf("com.logistics.rider.hungerstation" to "WGS-84"),
     val isContinuousScanning: Boolean = false,
     val environmentRecordCount: Int = 0,
     val hookedApps: List<AppInfoItem> = emptyList(),
@@ -104,7 +104,16 @@ data class AppState(
     // Data Management
     val isManageDataScreen: Boolean = false,
     val manageDataList: List<com.suseoaa.locationspoofer.data.db.CompleteLocation> = emptyList(),
-    val manageDataIsLoading: Boolean = false
+    val manageDataIsLoading: Boolean = false,
+
+    // Catch Log (سجل الصيد) - خاص بحزمة com.logistics.rider.hungerstation فقط
+    val isCatchLogScreen: Boolean = false,
+    val enableCatchLog: Boolean = true,
+    val catchLogAutoRefresh: Boolean = true,
+    val catchLogs: List<CatchLogEntry> = emptyList(),
+    val catchLogIsLoading: Boolean = false,
+    val selectedCatchLogCategory: CatchLogCategory = CatchLogCategory.ALL,
+    val targetPackageOnly: String = "com.logistics.rider.hungerstation"
 )
 
 data class AppInfoItem(

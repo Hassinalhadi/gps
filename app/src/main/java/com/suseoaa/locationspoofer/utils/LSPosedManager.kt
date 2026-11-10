@@ -6,23 +6,27 @@ import com.suseoaa.locationspoofer.LocationApp
 import com.suseoaa.locationspoofer.data.model.AppInfoItem
 
 class LSPosedManager {
+    companion object {
+        const val TARGET_PACKAGE = "com.logistics.rider.hungerstation"
+    }
+
     fun isModuleActive(): Boolean {
         return LocationApp.isModuleActive.value
     }
 
     fun getHookedApps(context: Context): List<AppInfoItem> {
-        val scope = com.suseoaa.locationspoofer.LocationApp.mService?.scope ?: emptyList()
         val pm = context.packageManager
-        return scope.mapNotNull { pkg ->
+        val pkg = TARGET_PACKAGE
+        return listOf(
             try {
                 val info = pm.getApplicationInfo(pkg, 0)
                 val label = pm.getApplicationLabel(info).toString()
-                val isSystem = (info.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0 || 
+                val isSystem = (info.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0 ||
                                (info.flags and android.content.pm.ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
                 AppInfoItem(pkg, label, isSystem)
             } catch (e: Exception) {
-                AppInfoItem(pkg, pkg, false) // fallback
+                AppInfoItem(pkg, "HungerStation Rider ($pkg)", false)
             }
-        }.sortedBy { it.appName }
+        )
     }
 }

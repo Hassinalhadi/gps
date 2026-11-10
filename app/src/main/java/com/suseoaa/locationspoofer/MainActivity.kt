@@ -25,6 +25,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import com.suseoaa.locationspoofer.ui.screen.BlockingScreen
+import com.suseoaa.locationspoofer.ui.screen.CatchLogScreen
 import com.suseoaa.locationspoofer.ui.screen.FullScreenMapPage
 import com.suseoaa.locationspoofer.ui.screen.InitializingScreen
 import com.suseoaa.locationspoofer.ui.screen.SpoofingScreen
@@ -55,8 +56,6 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
 
-        // 仅在初始启动或语言变更后同步系统 Locale
-        // AppCompatDelegate.setApplicationLocales 会自动处理持久化
         val savedLang = viewModel.getSavedLanguage()
         val currentLocales = androidx.appcompat.app.AppCompatDelegate.getApplicationLocales()
         if (savedLang.isNotEmpty() && (currentLocales.isEmpty || currentLocales.toLanguageTags() != savedLang)) {
@@ -75,8 +74,6 @@ class MainActivity : ComponentActivity() {
                 val isDark = isSystemInDarkTheme()
                 val colorScheme = if (isDark) AppColorSchemeDark else AppColorSchemeLight
 
-                // 核心：在 Compose 层级内部通过 CompositionLocalProvider 动态刷新
-                // 使用 remember(uiState.currentLanguage) 确保语言切换时重新计算 Context
                 val context = LocalContext.current
                 val wrappedContext = remember(uiState.currentLanguage) {
                     if (uiState.currentLanguage.isNotEmpty()) {
@@ -167,6 +164,7 @@ private data class MainNavState(
     val fullScreen: Boolean,
     val scanner: Boolean,
     val manage: Boolean,
+    val catchLog: Boolean,
     val settings: Boolean
 )
 
@@ -189,8 +187,10 @@ fun MainScreen(
         isFullScreenMap = false
     }
 
-    BackHandler(enabled = isFullScreenMap || isScannerMap || uiState.isManageDataScreen || isSettingsScreen) {
-        if (uiState.isManageDataScreen) {
+    BackHandler(enabled = isFullScreenMap || isScannerMap || uiState.isManageDataScreen || uiState.isCatchLogScreen || isSettingsScreen) {
+        if (uiState.isCatchLogScreen) {
+            viewModel.toggleCatchLogScreen(false)
+        } else if (uiState.isManageDataScreen) {
             viewModel.toggleManageDataScreen(false)
         } else if (isSettingsScreen) {
             isSettingsScreen = false
@@ -202,7 +202,13 @@ fun MainScreen(
     }
 
     AnimatedContent(
-        targetState = MainNavState(isFullScreenMap || isInPipMode, isScannerMap && !isInPipMode, uiState.isManageDataScreen && !isInPipMode, isSettingsScreen && !isInPipMode),
+        targetState = MainNavState(
+            fullScreen = isFullScreenMap || isInPipMode,
+            scanner = isScannerMap && !isInPipMode,
+            manage = uiState.isManageDataScreen && !isInPipMode,
+            catchLog = uiState.isCatchLogScreen && !isInPipMode,
+            settings = isSettingsScreen && !isInPipMode
+        ),
         transitionSpec = {
             slideInVertically(tween(400)) { it } togetherWith slideOutVertically(tween(400)) { -it }
         },
@@ -215,6 +221,13 @@ fun MainScreen(
                 isDark = isDark,
                 isInPipMode = isInPipMode,
                 onClose = { closeMapAndResetRouteIfNeeded() }
+            )
+        } else if (navState.catchLog) {
+            CatchLogScreen(
+                viewModel = viewModel,
+                uiState = uiState,
+                isDark = isDark,
+                onClose = { viewModel.toggleCatchLogScreen(false) }
             )
         } else if (navState.scanner) {
             com.suseoaa.locationspoofer.ui.screen.ScannerMapScreen(

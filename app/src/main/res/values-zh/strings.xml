@@ -178,4 +178,25 @@
     <string name="merged_updates_badge">包含 %1$d 个版本的更新</string>
     <string name="brand_github">GitHub</string>
     <string name="brand_telegram">Telegram</string>
+    <string name="app_hungerstation">HungerStation Rider</string>
+    <string name="catch_log_section_header">捕获与拦截日志 (LOG)</string>
+    <string name="catch_log_title">捕获日志 (سجل صيد)</string>
+    <string name="catch_log_card_desc">仅针对 com.logistics.rider.hungerstation 的实时订单、定位与防检测拦截日志</string>
+    <string name="catch_log_exclusive_pkg">仅对 HungerStation 生效</string>
+    <string name="catch_log_exclusive_desc">目标包名: 仅限 com.logistics.rider.hungerstation</string>
+    <string name="catch_log_search_hint">搜索捕获日志或坐标...</string>
+    <string name="catch_log_live">实时</string>
+    <string name="catch_log_refresh">刷新日志</string>
+    <string name="catch_log_clear">清空日志</string>
+    <string name="catch_log_clear_confirm">确定要清空 HungerStation 的所有捕获日志吗？</string>
+    <string name="catch_log_empty">暂无捕获日志</string>
+    <string name="catch_log_empty_hint">在开启模拟时打开 HungerStation (com.logistics.rider.hungerstation) 即可查看实时日志</string>
+    <string name="catch_log_use_coords">应用坐标</string>
+    <string name="catch_log_coords_applied">已将捕获的坐标应用到地图</string>
+    <string name="catch_cat_all">全部</string>
+    <string name="catch_cat_order">订单与网络</string>
+    <string name="catch_cat_location">GPS 定位</string>
+    <string name="catch_cat_security">防检测拦截</string>
+    <string name="catch_cat_env">基站与环境</string>
+    <string name="catch_cat_system">系统</string>
 </resources>

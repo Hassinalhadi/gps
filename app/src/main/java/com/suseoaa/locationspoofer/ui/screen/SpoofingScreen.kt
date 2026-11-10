@@ -88,15 +88,7 @@ data class AppPoiItem(val title: String, val snippet: String, val lat: Double, v
 data class RecommendedApp(val nameRes: Int, val packageName: String, val icon: ImageVector)
 
 val RECOMMENDED_APPS = listOf(
-    RecommendedApp(R.string.app_wechat, "com.tencent.mm", Icons.AutoMirrored.Outlined.Chat),
-    RecommendedApp(R.string.app_chaoxing, "com.chaoxing.mobile", Icons.Outlined.School),
-    RecommendedApp(R.string.app_amap, "com.autonavi.minimap", Icons.Outlined.Map),
-    RecommendedApp(R.string.app_baidumap, "com.baidu.BaiduMap", Icons.Outlined.Map),
-    RecommendedApp(R.string.app_tencentmap, "com.tencent.map", Icons.Outlined.Map),
-    RecommendedApp(R.string.app_meituan, "com.sankuai.meituan", Icons.Outlined.LocalDining),
-    RecommendedApp(R.string.app_dingtalk, "com.alibaba.android.rimet", Icons.Outlined.Work),
-    RecommendedApp(R.string.app_google, "com.google.android.gms", Icons.Outlined.Android),
-    RecommendedApp(R.string.app_settings, "com.android.settings", Icons.Outlined.Settings),
+    RecommendedApp(R.string.app_hungerstation, "com.logistics.rider.hungerstation", Icons.Outlined.DeliveryDining)
 )
 
 @Composable
@@ -257,6 +249,14 @@ fun SpoofingScreen(
                 fontWeight = FontWeight.Bold
             )
             Spacer(Modifier.weight(1f))
+            IconButton(onClick = { viewModel.toggleCatchLogScreen(true) }, modifier = Modifier.size(36.dp)) {
+                Icon(
+                    Icons.Rounded.Terminal, stringResource(R.string.catch_log_title),
+                    tint = AccentOrange,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            Spacer(Modifier.width(8.dp))
             IconButton(onClick = { showSavedLocations = true }, modifier = Modifier.size(36.dp)) {
                 Icon(
                     Icons.Rounded.Bookmarks, stringResource(R.string.collection_list),
@@ -482,6 +482,62 @@ fun SpoofingScreen(
                 updateViewModel.fetchReleases()
                 showUpdateDialog = true 
             })
+            Spacer(Modifier.height(16.dp))
+
+            // قسم سجل الصيد (Catch Log) الخاص بحزمة هنقرستيشن فقط
+            SectionHeader(Icons.Rounded.Terminal, stringResource(R.string.catch_log_section_header), isDark)
+            Spacer(Modifier.height(8.dp))
+            Card(
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(containerColor = AppColors.cardBackground(isDark)),
+                border = BorderStroke(1.dp, AccentOrange.copy(alpha = 0.3f)),
+                elevation = CardDefaults.cardElevation(0.dp),
+                modifier = Modifier.clickable { viewModel.toggleCatchLogScreen(true) }
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier.size(36.dp).clip(RoundedCornerShape(8.dp))
+                            .background(AccentOrange.copy(alpha = 0.14f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(Icons.Rounded.Terminal, null, tint = AccentOrange, modifier = Modifier.size(18.dp))
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                stringResource(R.string.catch_log_title),
+                                color = MaterialTheme.colorScheme.onBackground,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(AccentGreen.copy(alpha = 0.15f))
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                            ) {
+                                Text(
+                                    text = "${uiState.catchLogs.size}",
+                                    color = AccentGreen,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                        Text(
+                            stringResource(R.string.catch_log_card_desc),
+                            color = AppColors.textSecondary(isDark),
+                            fontSize = 11.sp
+                        )
+                    }
+                    Icon(Icons.Outlined.ChevronRight, null, tint = AppColors.textSecondary(isDark), modifier = Modifier.size(16.dp))
+                }
+            }
             Spacer(Modifier.height(16.dp))
 
             SectionHeader(Icons.Rounded.Extension, stringResource(R.string.custom_coordinate_algo), isDark)

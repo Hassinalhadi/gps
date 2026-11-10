@@ -63,6 +63,7 @@ class MainViewModel(
             mockCell = settingsRepository.mockCell,
             mockBluetooth = settingsRepository.mockBluetooth,
             enableJitter = settingsRepository.enableJitter,
+            enableCatchLog = settingsRepository.enableCatchLog,
             altitudeInput = settingsRepository.altitude,
             satelliteCountInput = settingsRepository.satelliteCount
         )
@@ -118,6 +119,10 @@ class MainViewModel(
             }
             if (!settingsRepository.isSpoofingActive) {
                 fetchCurrentLocation(context)
+            }
+            if (root) {
+                locationRepository.initCatchLogFile()
+                refreshCatchLogs()
             }
             refreshRecordCount()
             loadManageData()
@@ -1582,5 +1587,50 @@ class MainViewModel(
 
     fun setIgnoredVersion(version: String) {
         settingsRepository.setIgnoredVersion(version)
+    }
+
+    // ── إدارة سجل الصيد (Catch Log) الخاص بحزمة com.logistics.rider.hungerstation ──
+
+    fun toggleCatchLogScreen(show: Boolean) {
+        _uiState.update { it.copy(isCatchLogScreen = show) }
+        if (show) {
+            refreshCatchLogs()
+        }
+    }
+
+    fun toggleEnableCatchLog() {
+        val newVal = !_uiState.value.enableCatchLog
+        settingsRepository.enableCatchLog = newVal
+        SpooferProvider.enableCatchLog = newVal
+        _uiState.update { it.copy(enableCatchLog = newVal) }
+        syncMockSettings()
+    }
+
+    fun toggleCatchLogAutoRefresh() {
+        _uiState.update { it.copy(catchLogAutoRefresh = !it.catchLogAutoRefresh) }
+    }
+
+    fun setCatchLogCategory(category: com.suseoaa.locationspoofer.data.model.CatchLogCategory) {
+        _uiState.update { it.copy(selectedCatchLogCategory = category) }
+    }
+
+    fun refreshCatchLogs() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _uiState.update { it.copy(catchLogIsLoading = true) }
+            val logs = locationRepository.readCatchLogs()
+            _uiState.update {
+                it.copy(
+                    catchLogs = logs,
+                    catchLogIsLoading = false
+                )
+            }
+        }
+    }
+
+    fun clearCatchLogs() {
+        viewModelScope.launch(Dispatchers.IO) {
+            locationRepository.clearCatchLogs()
+            _uiState.update { it.copy(catchLogs = emptyList()) }
+        }
     }
 }

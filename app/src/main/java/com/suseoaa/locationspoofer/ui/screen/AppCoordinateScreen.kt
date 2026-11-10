@@ -140,7 +140,7 @@ fun AppCoordinateScreen(
         selectedApp?.let { app ->
             CoordinateSelectionDialog(
                 appInfo = app,
-                currentSystem = uiState.appCoordinateSystems[app.packageName] ?: "GCJ-02",
+                currentSystem = uiState.appCoordinateSystems[app.packageName] ?: "WGS-84",
                 onDismiss = { selectedApp = null },
                 onSelect = { sys ->
                     if (sys == "GCJ-02") {

@@ -98,6 +98,10 @@ class SettingsRepository(private val settingsManager: SettingsManager) {
         get() = settingsManager.enableJitter
         set(value) { settingsManager.enableJitter = value }
 
+    var enableCatchLog: Boolean
+        get() = settingsManager.enableCatchLog
+        set(value) { settingsManager.enableCatchLog = value }
+
     var altitude: String
         get() = settingsManager.altitude
         set(value) { settingsManager.altitude = value }
